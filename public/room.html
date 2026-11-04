@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>방 위치 측정</title>
+<style>
+  :root { --bg:#15171d; --panel:#1f222b; --line:#2b2f3a; --text:#dde1ea; --muted:#8a92a3;
+          --accent:#ff4d5a; --cyan:#4dd0e1; --ok:#5fd38d; --floor:#1b1e26; --grid:#262a34; --grid2:#30354200; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; padding:16px; }
+  .wrap { max-width: 1200px; margin: 0 auto; display:grid; gap:14px; }
+  h1 { font-size:18px; margin:0; border-left:4px solid var(--accent); padding-left:8px; }
+  p.lead { color:var(--muted); margin:4px 0 0; font-size:13px; line-height:1.6; }
+  main { display:grid; grid-template-columns: minmax(0, 1fr) 320px; gap:14px; align-items:start; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; min-width:0; }
+  h2 { font-size:13px; color:var(--muted); margin:0 0 10px; font-weight:600; }
+  canvas { width:100%; display:block; touch-action:none; border-radius:6px; }
+  .side { display:grid; gap:14px; }
+  .big { font-size:26px; font-weight:700; font-variant-numeric: tabular-nums; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  label { font-size:13px; color:var(--muted); }
+  input[type=number] { background:#2a2e3a; color:var(--text); border:0; border-radius:6px; padding:6px 8px; width:72px; font-size:14px; font-variant-numeric: tabular-nums; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:7px 12px; font-size:13px; cursor:pointer; }
+  button.ghost { background:#2a2e3a; color:var(--text); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric: tabular-nums; font-size:13px; }
+  th, td { text-align:right; padding:5px 6px; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; }
+  td b { color:var(--cyan); }
+  .muted { color:var(--muted); font-size:12px; }
+  #msg { color:var(--accent); font-size:12px; min-height:16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>방 위치 측정</h1>
+    <p class="lead">스테이션(S1~S4)을 끌어서 실제로 놓은 자리에 맞추세요. 10cm 단위로 저장돼요.
+      빈 곳을 누르면 그 자리가 <b style="color:var(--ok)">실제 위치(초록 +)</b>로 찍히고, "오차 기록"을 누르면 추정 위치와 비교해요.</p>
+  </div>
+
+  <main>
+    <section>
+      <div class="row" style="justify-content:space-between;margin-bottom:10px">
+        <div class="row">
+          <label for="w">가로(m)</label><input id="w" type="number" step="0.1" min="0.5" max="50">
+          <label for="h">세로(m)</label><input id="h" type="number" step="0.1" min="0.5" max="50">
+        </div>
+        <div class="row"><label><input type="checkbox" id="circles" checked> 거리 원 보기</label></div>
+      </div>
+      <canvas id="c"></canvas>
+      <div id="msg"></div>
+      <div class="row" id="keyRow" hidden><label for="key">관리 키</label><input id="key" type="password" style="width:160px;background:#2a2e3a;color:var(--text);border:0;border-radius:6px;padding:6px 8px">
+        <button type="button" id="keySave" class="ghost">저장</button></div>
+    </section>
+
+    <div class="side">
+      <section>
+        <h2>폰 추정 위치</h2>
+        <div class="big" id="est">신호 없음</div>
+        <div class="muted" id="estSub"></div>
+      </section>
+
+      <section>
+        <h2>스테이션 (숫자로도 입력 가능)</h2>
+        <table>
+          <thead><tr><th></th><th>x(m)</th><th>y(m)</th><th>신호</th></tr></thead>
+          <tbody id="st"></tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>오차 기록 <span class="muted" id="avg"></span></h2>
+        <div class="row" style="margin-bottom:8px">
+          <span class="muted" id="actualTxt">실제 위치: 지도 빈 곳을 누르세요</span>
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <button id="rec" type="button">오차 기록</button>
+          <button id="clear" type="button" class="ghost">지우기</button>
+        </div>
+        <table><thead><tr><th>#</th><th>실제</th><th>추정</th><th>오차</th></tr></thead>
+          <tbody id="log"></tbody></table>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const IDS = ['STATION_01', 'STATION_02', 'STATION_03', 'STATION_04'];
+const COLORS = ['#4dd0e1', '#f5c15b', '#b58cff', '#5fd38d'];
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+const $ = id => document.getElementById(id);
+const r1 = v => Math.round(v * 10) / 10;
+
+let room = { width: 5, height: 4, stations: {} };
+let live = { estimate: null, parts: [] };
+let drag = null;           // 끌고 있는 스테이션 ID
+let actual = null;         // 실제 위치 {x,y}
+const log = [];
+
+// ---- 좌표 변환 (m ↔ 캔버스 픽셀) ----
+let S = 100, OX = 40, OY = 30;     // 1m 당 픽셀, 여백
+function layout() {
+  const cssW = c.clientWidth || 800;
+  const pad = 40;
+  S = (cssW - pad * 2) / room.width;
+  const cssH = room.height * S + pad + 34;
+  c.style.height = cssH + 'px';
+  const dpr = window.devicePixelRatio || 1;
+  c.width = cssW * dpr; c.height = cssH * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  OX = pad; OY = 26;
+}
+const px = (x, y) => [OX + x * S, OY + y * S];
+function toM(e) {
+  const r = c.getBoundingClientRect();
+  return { x: (e.clientX - r.left - OX) / S, y: (e.clientY - r.top - OY) / S };
+}
+
+function draw() {
+  layout();
+  const W = room.width, H = room.height;
+  ctx.clearRect(0, 0, c.width, c.height);
+  // 바닥
+  ctx.fillStyle = '#1b1e26'; ctx.fillRect(OX, OY, W * S, H * S);
+  // 격자: 10cm(화면이 넓을 때만), 50cm, 1m
+  const lines = (step, color, w) => {
+    ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath();
+    for (let x = 0; x <= W + 1e-9; x += step) { const [a] = px(x, 0); ctx.moveTo(a, OY); ctx.lineTo(a, OY + H * S); }
+    for (let y = 0; y <= H + 1e-9; y += step) { const [, b] = px(0, y); ctx.moveTo(OX, b); ctx.lineTo(OX + W * S, b); }
+    ctx.stroke();
+  };
+  if (S * 0.1 >= 8) lines(0.1, '#20242d', 1);
+  lines(0.5, '#272b35', 1);
+  lines(1, '#343a47', 1);
+  ctx.strokeStyle = '#5a6172'; ctx.lineWidth = 2; ctx.strokeRect(OX, OY, W * S, H * S);
+  // 눈금 숫자
+  ctx.fillStyle = '#8a92a3'; ctx.font = '11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let x = 0; x <= W + 1e-9; x += 1) ctx.fillText(x + 'm', OX + x * S, OY + H * S + 6);
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let y = 0; y <= H + 1e-9; y += 1) ctx.fillText(y + 'm', OX - 6, OY + y * S);
+
+  // 거리 원
+  if ($('circles').checked) for (const p of live.parts) {
+    const s = room.stations[p.id]; if (!s) continue;
+    const [a, b] = px(s.x, s.y);
+    ctx.strokeStyle = COLORS[IDS.indexOf(p.id)] + '66'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.arc(a, b, p.d * S, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+  }
+  // 실제 위치
+  if (actual) {
+    const [a, b] = px(actual.x, actual.y);
+    ctx.strokeStyle = '#5fd38d'; ctx.lineWidth = 3; ctx.beginPath();
+    ctx.moveTo(a - 10, b); ctx.lineTo(a + 10, b); ctx.moveTo(a, b - 10); ctx.lineTo(a, b + 10); ctx.stroke();
+    if (live.estimate) {
+      const [ea, eb] = px(live.estimate.x, live.estimate.y);
+      ctx.strokeStyle = '#5fd38d88'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(ea, eb); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  // 폰 추정
+  if (live.estimate) {
+    const [a, b] = px(live.estimate.x, live.estimate.y);
+    ctx.fillStyle = 'rgba(255,77,90,.25)'; ctx.beginPath(); ctx.arc(a, b, 18, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ff4d5a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(a, b, 8, 0, 7); ctx.fill(); ctx.stroke();
+  }
+  // 스테이션
+  IDS.forEach((id, i) => {
+    const s = room.stations[id]; if (!s) return;
+    const [a, b] = px(s.x, s.y);
+    const on = live.parts.some(p => p.id === id);
+    ctx.fillStyle = on ? COLORS[i] : '#4a5060';
+    ctx.strokeStyle = drag === id ? '#fff' : '#15171d'; ctx.lineWidth = drag === id ? 3 : 2;
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(a - 13, b - 13, 26, 26, 6) : ctx.rect(a - 13, b - 13, 26, 26); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#15171d'; ctx.font = '700 12px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('S' + (i + 1), a, b + 1);
+    if (drag === id) {
+      const t = `(${s.x.toFixed(1)}, ${s.y.toFixed(1)})`;
+      ctx.font = '600 13px system-ui'; const w = ctx.measureText(t).width + 12;
+      ctx.fillStyle = '#000c'; ctx.fillRect(a - w / 2, b - 42, w, 22);
+      ctx.fillStyle = '#fff'; ctx.fillText(t, a, b - 31);
+    }
+  });
+}
+
+function renderSide() {
+  const e = live.estimate;
+  $('est').textContent = e ? `(${e.x.toFixed(2)}, ${e.y.toFixed(2)}) m` : '신호 없음';
+  $('estSub').textContent = e ? `신호 받은 스테이션 ${live.parts.length}개${live.parts.length < 3 ? ' · 3개 이상이면 더 정확해요' : ''}` : '비콘 앱과 ESP32를 확인하세요';
+  const tb = $('st');
+  if (tb.children.length !== 4) {
+    tb.innerHTML = IDS.map((id, i) => `<tr>
+      <td><b style="color:${COLORS[i]}">S${i + 1}</b></td>
+      <td><input type="number" step="0.1" min="0" data-id="${id}" data-k="x"></td>
+      <td><input type="number" step="0.1" min="0" data-id="${id}" data-k="y"></td>
+      <td class="sig" data-id="${id}"></td></tr>`).join('');
+    tb.querySelectorAll('input').forEach(inp => inp.onchange = () => {
+      const s = room.stations[inp.dataset.id]; s[inp.dataset.k] = r1(+inp.value || 0); save();
+    });
+  }
+  tb.querySelectorAll('input').forEach(inp => {
+    if (document.activeElement !== inp) inp.value = room.stations[inp.dataset.id]?.[inp.dataset.k]?.toFixed(1) ?? '';
+  });
+  tb.querySelectorAll('.sig').forEach(td => {
+    const p = live.parts.find(p => p.id === td.dataset.id);
+    td.textContent = p ? `${p.rssi}dBm ≈${p.d.toFixed(1)}m` : '—';
+  });
+  if (document.activeElement !== $('w')) $('w').value = room.width.toFixed(1);
+  if (document.activeElement !== $('h')) $('h').value = room.height.toFixed(1);
+  $('actualTxt').textContent = actual ? `실제 위치: (${actual.x.toFixed(1)}, ${actual.y.toFixed(1)}) m` : '실제 위치: 지도 빈 곳을 누르세요';
+}
+
+function render() { draw(); renderSide(); }
+
+async function save() {
+  try {
+    let key = ''; try { key = localStorage.getItem('dgu-key') || ''; } catch (e) {}
+    const res = await fetch('/room', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Device-Key': key }, body: JSON.stringify(room) });
+    if (res.status === 403) { $('msg').textContent = '인터넷 공유 링크에서는 위치를 바꿀 수 없어요. 노트북에서 바꿔 주세요.'; return; }
+    if (res.status === 401) { $('keyRow').hidden = false; $('msg').textContent = '관리 키가 필요해요. 아래에 DEVICE_KEY를 입력하고 다시 옮겨 보세요.'; return; }
+    if (!res.ok) { $('msg').textContent = '저장하지 못했어요 (' + res.status + ')'; return; }
+    const d = await res.json();
+    room = { width: d.width, height: d.height, stations: d.stations };
+    $('msg').textContent = '';
+  } catch (e) { $('msg').textContent = '서버에 연결할 수 없어요.'; }
+  render();
+}
+
+// ---- 끌기 ----
+c.addEventListener('pointerdown', e => {
+  const m = toM(e);
+  let hit = null, bd = 22 / S;
+  for (const id of IDS) {
+    const s = room.stations[id]; if (!s) continue;
+    const d = Math.hypot(s.x - m.x, s.y - m.y);
+    if (d < bd) { bd = d; hit = id; }
+  }
+  if (hit) { drag = hit; c.setPointerCapture(e.pointerId); c.style.cursor = 'grabbing'; render(); return; }
+  if (m.x >= 0 && m.y >= 0 && m.x <= room.width && m.y <= room.height) { actual = { x: r1(m.x), y: r1(m.y) }; render(); }
+});
+c.addEventListener('pointermove', e => {
+  const m = toM(e);
+  if (!drag) {
+    const near = IDS.some(id => { const s = room.stations[id]; return s && Math.hypot(s.x - m.x, s.y - m.y) < 22 / S; });
+    c.style.cursor = near ? 'grab' : 'crosshair'; return;
+  }
+  room.stations[drag] = { x: r1(Math.min(Math.max(m.x, 0), room.width)), y: r1(Math.min(Math.max(m.y, 0), room.height)) };
+  draw(); renderSide();
+});
+const endDrag = () => { if (!drag) return; drag = null; c.style.cursor = 'grab'; save(); };
+c.addEventListener('pointerup', endDrag);
+c.addEventListener('pointercancel', endDrag);
+
+$('w').onchange = () => { room.width = r1(Math.max(0.5, +$('w').value || room.width)); save(); };
+$('h').onchange = () => { room.height = r1(Math.max(0.5, +$('h').value || room.height)); save(); };
+$('circles').onchange = draw;
+window.addEventListener('resize', draw);
+
+$('keySave').onclick = () => { try { localStorage.setItem('dgu-key', $('key').value); } catch (e) {} $('keyRow').hidden = true; save(); };
+
+// ---- 오차 기록 ----
+function renderLog() {
+  $('log').innerHTML = log.map((r, i) => `<tr><td>${i + 1}</td><td>(${r.a.x.toFixed(1)}, ${r.a.y.toFixed(1)})</td>
+    <td>(${r.e.x.toFixed(1)}, ${r.e.y.toFixed(1)})</td><td>${(r.err * 100).toFixed(0)}cm</td></tr>`).join('');
+  $('avg').textContent = log.length ? `· 평균 ${(log.reduce((s, r) => s + r.err, 0) / log.length * 100).toFixed(0)}cm (${log.length}회)` : '';
+}
+$('rec').onclick = () => {
+  if (!actual) { $('msg').textContent = '먼저 지도 빈 곳을 눌러 실제 위치를 찍어 주세요.'; return; }
+  if (!live.estimate) { $('msg').textContent = '폰 신호가 없어서 기록하지 못했어요.'; return; }
+  log.push({ a: { ...actual }, e: { ...live.estimate }, err: Math.hypot(actual.x - live.estimate.x, actual.y - live.estimate.y) });
+  $('msg').textContent = ''; renderLog();
+};
+$('clear').onclick = () => { log.length = 0; renderLog(); };
+
+// ---- 서버 연결 ----
+fetch('/room').then(r => r.json()).then(d => {
+  room = { width: d.width, height: d.height, stations: d.stations };
+  live = { estimate: d.estimate, parts: d.parts || [] };
+  render();
+}).catch(() => { $('msg').textContent = '서버에 연결할 수 없어요. node server.js 를 실행하세요.'; render(); });
+if (typeof io !== 'undefined') io().on('update', d => {
+  if (!d.room) return;
+  live = { estimate: d.room.estimate, parts: d.room.parts || [] };
+  if (!drag) room = { width: d.room.width, height: d.room.height, stations: d.room.stations };
+  render();
+});
+render();
+</script>
+</body>
+</html>

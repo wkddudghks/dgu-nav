@@ -1,0 +1,293 @@
+<title>신공학관 길찾기</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: wayfinding sign — controls bar, floor plan canvas, route card beside (stacks on phones) */
+:root {
+  --bg: #f4f3f7; --surface: #ffffff; --ink: #1d1b26; --muted: #6b6878; --line: #dcd9e4;
+  --corridor: #e4e1ec; --room: #ffffff; --room-edge: #cfcbd9; --room-ink: #4a4757;
+  --accent: #8a1f6b; --accent-ink: #ffffff; --route: #d4205f;
+  --stair: #f4e3b5; --stair-ink: #7a5a00; --ev: #cdebdc; --ev-ink: #1d6b48; --wc: #e6e8f2; --void: #efedf3;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #15141b; --surface: #1e1c26; --ink: #ecebf2; --muted: #9a97a8; --line: #2e2b38;
+  --corridor: #2b2836; --room: #1f1d28; --room-edge: #3a3646; --room-ink: #b9b6c6;
+  --accent: #d55aa8; --accent-ink: #1a0f17; --route: #ff4f86;
+  --stair: #4a3b1c; --stair-ink: #f2c55b; --ev: #1d3f31; --ev-ink: #6fe0ae; --wc: #262836; --void: #191820;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #15141b; --surface: #1e1c26; --ink: #ecebf2; --muted: #9a97a8; --line: #2e2b38;
+  --corridor: #2b2836; --room: #1f1d28; --room-edge: #3a3646; --room-ink: #b9b6c6;
+  --accent: #d55aa8; --accent-ink: #1a0f17; --route: #ff4f86;
+  --stair: #4a3b1c; --stair-ink: #f2c55b; --ev: #1d3f31; --ev-ink: #6fe0ae; --wc: #262836; --void: #191820;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 16px 28px; }
+.wrap { max-width: 1400px; margin: 0 auto; display: grid; gap: 14px; }
+header { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 20px; }
+.brand { display: grid; gap: 2px; margin-right: auto; }
+.brand small { color: var(--muted); font-size: 12px; letter-spacing: .08em; }
+h1 { margin: 0; font-size: 22px; font-weight: 700; text-wrap: balance; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field label { font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+select { font: inherit; font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; width: 100%; max-width: 320px; }
+select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.swap { font: inherit; font-size: 13px; background: none; border: 1px solid var(--line); color: var(--ink);
+  border-radius: 8px; padding: 8px 10px; cursor: pointer; align-self: end; }
+.swap:hover { border-color: var(--accent); }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
+.mapbox { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
+.tabs { display: flex; gap: 6px; padding: 10px; border-bottom: 1px solid var(--line); align-items: center; flex-wrap: wrap; }
+.tabs button { font: inherit; font-size: 14px; font-weight: 500; border: 0; border-radius: 6px; padding: 6px 14px;
+  background: var(--corridor); color: var(--muted); cursor: pointer; font-variant-numeric: tabular-nums; }
+.tabs button.on { background: var(--accent); color: var(--accent-ink); }
+.tabs button .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--route); margin-left: 6px; vertical-align: middle; }
+.tabs .hint { margin-left: auto; font-size: 12px; color: var(--muted); }
+.scroll { overflow-x: auto; }
+canvas { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: manipulation; }
+@media (max-width: 860px) { canvas { width: 960px; max-width: none; } }
+aside { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 14px; min-width: 0; }
+.summary { display: grid; gap: 2px; }
+.summary .big { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.summary .sub { color: var(--muted); font-size: 13px; }
+ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; counter-reset: s; }
+ol li { counter-increment: s; display: grid; grid-template-columns: 26px 1fr; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); line-height: 1.45; }
+ol li::before { content: counter(s); font-family: var(--font-mono); font-size: 12px; color: var(--muted); padding-top: 2px; }
+ol li.floor { color: var(--accent); font-weight: 700; }
+ol li.end { font-weight: 700; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; background: var(--c); }
+.note { font-size: 12px; color: var(--muted); line-height: 1.55; border-top: 1px solid var(--line); padding-top: 10px; }
+.note code { font-family: var(--font-mono); font-size: 11px; }
+@media (max-width: 860px) { main { grid-template-columns: minmax(0, 1fr); } select { max-width: none; } .field { flex: 1 1 160px; } .brand { flex-basis: 100%; } }
+@media (prefers-reduced-motion: no-preference) { canvas { transition: opacity .15s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand"><small>동국대학교 신공학관</small><h1>신공학관 길찾기</h1></div>
+    <div class="field"><label for="from">출발 (지도를 눌러도 돼요)</label><select id="from"></select></div>
+    <button class="swap" id="swap" type="button" aria-label="출발과 도착 바꾸기">⇄ 바꾸기</button>
+    <div class="field"><label for="to">도착</label><select id="to"></select></div>
+  </header>
+  <main>
+    <section class="mapbox">
+      <div class="tabs" id="tabs"><span class="hint" id="hint"></span></div>
+      <div class="scroll" id="scroll"><canvas id="map" width="2000" height="1260" aria-label="층 평면도"></canvas></div>
+    </section>
+    <aside>
+      <div class="summary"><div class="big" id="dist">–</div><div class="sub" id="sub"></div></div>
+      <ol id="steps"></ol>
+      <div class="legend">
+        <span style="--c: var(--route)">경로</span>
+        <span style="--c: var(--stair)">계단</span>
+        <span style="--c: var(--ev)">엘리베이터</span>
+        <span style="--c: var(--wc)">화장실</span>
+      </div>
+      <div class="note">걷는 속도 분당 약 70m 기준. 지도는 6층 안내도를 바탕으로 만들었고 모든 층의 구조가 같아요. ESP32 비콘으로 위치를 자동으로 잡는 실시간 버전은 노트북 서버(<code>share.bat</code>)로 실행해요.</div>
+    </aside>
+  </main>
+</div>
+
+<script>
+const M = /*MAP*/null;
+const canvas = document.getElementById('map'), ctx = canvas.getContext('2d');
+const $ = id => document.getElementById(id);
+const tok = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const N = Object.fromEntries(M.nodes.map(n => [n.id, n]));
+const adj = {};
+for (const [a, b, w] of M.edges) {
+  const c = w ?? Math.hypot(N[a].x - N[b].x, N[a].y - N[b].y) / M.pxPerM;
+  (adj[a] ||= []).push([b, c]); (adj[b] ||= []).push([a, c]);
+}
+const roomOf = {}; for (const f of M.floors) for (const r of f.rooms) roomOf[f.id + '|' + r.name] = r;
+
+// 출발 후보: 목적지 + 계단/엘리베이터
+const places = [...M.destinations.map(d => ({ name: d.name, node: d.node, floor: d.floor }))];
+for (const n of M.nodes) if (n.label && /계단|엘리베이터/.test(n.label)) places.push({ name: `${n.floor}층 ${n.label}`, node: n.id, floor: n.floor });
+places.sort((a, b) => a.floor - b.floor || a.name.localeCompare(b.name, 'ko', { numeric: true }));
+function fill(sel, list) {
+  const g = {};
+  for (const p of list) {
+    if (!g[p.floor]) { g[p.floor] = document.createElement('optgroup'); g[p.floor].label = p.floor + '층'; sel.appendChild(g[p.floor]); }
+    g[p.floor].appendChild(new Option(p.name, p.node));
+  }
+}
+fill($('from'), places); fill($('to'), M.destinations);
+const custom = new Option('지도에서 고른 위치', ''); custom.hidden = true; $('from').prepend(custom);
+
+let from = '6F_D_중앙엘리베이터', to = M.destinations.find(d => d.room === '6103')?.node ?? M.destinations[0].node, view = 6;
+const fromHash = location.hash.slice(1).replace(/-/g, '_');
+if (N[fromHash]) from = fromHash;
+view = N[from].floor;
+
+for (const f of M.floors) {
+  const b = document.createElement('button'); b.type = 'button'; b.dataset.f = f.id;
+  b.onclick = () => { view = f.id; draw(); follow(); };
+  $('tabs').insertBefore(b, $('hint'));
+}
+$('from').onchange = e => { if (e.target.value) { from = e.target.value; view = N[from].floor; update(); } };
+$('to').onchange = e => { to = e.target.value; update(); };
+$('swap').onclick = () => {
+  const dest = M.destinations.find(d => d.node === from);
+  if (!dest) return;
+  [from, to] = [to, from]; view = N[from].floor; update();
+};
+canvas.onclick = e => {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * canvas.width / r.width, y = (e.clientY - r.top) * canvas.height / r.height;
+  let best = null, bd = 90;
+  for (const n of M.nodes) if (n.floor === view) { const d = Math.hypot(n.x - x, n.y - y); if (d < bd) { bd = d; best = n.id; } }
+  if (best) { from = best; update(); }
+};
+
+function route(s, t) {
+  const dist = { [s]: 0 }, prev = {}, done = new Set();
+  for (;;) {
+    let u = null;
+    for (const k in dist) if (!done.has(k) && (u === null || dist[k] < dist[u])) u = k;
+    if (u === null) return null;
+    if (u === t) break;
+    done.add(u);
+    for (const [v, w] of adj[u] || []) if (dist[u] + w < (dist[v] ?? Infinity)) { dist[v] = dist[u] + w; prev[v] = u; }
+  }
+  const p = [t]; while (p[0] !== s) p.unshift(prev[p[0]]);
+  return { path: p, m: dist[t] };
+}
+
+// 좌·우회전까지 넣은 안내문
+function steps(r) {
+  const out = [], P = r.path.map(id => N[id]);
+  let acc = 0, dir = null;
+  const flush = (suffix) => { if (acc >= 2) out.push({ t: `약 ${Math.round(acc)}m 직진${suffix ?? ''}` }); else if (suffix) out.push({ t: suffix.replace(/^ 후 /, '') }); acc = 0; };
+  for (let i = 1; i < P.length; i++) {
+    const a = P[i - 1], b = P[i];
+    if (a.floor !== b.floor) {
+      flush();
+      const how = /엘리베이터/.test(a.label ?? '') ? a.label : (a.label ?? '계단');
+      out.push({ t: `${how}${josa(how)} ${b.floor}층 ${b.floor > a.floor ? '올라가기' : '내려가기'}`, cls: 'floor' });
+      dir = null; continue;
+    }
+    const len = Math.hypot(b.x - a.x, b.y - a.y); if (len < 1) continue;
+    const d = [(b.x - a.x) / len, (b.y - a.y) / len];
+    if (dir) {
+      const cross = dir[0] * d[1] - dir[1] * d[0], dot = dir[0] * d[0] + dir[1] * d[1];
+      const ang = Math.atan2(cross, dot) * 180 / Math.PI;
+      if (Math.abs(ang) > 150) flush(' 후 뒤로 돌기');
+      else if (Math.abs(ang) > 35) flush(ang > 0 ? ' 후 우회전' : ' 후 좌회전');
+    }
+    acc += len / M.pxPerM; dir = d;
+  }
+  const end = N[r.path.at(-1)], dest = M.destinations.find(x => x.node === end.id);
+  let side = '';
+  const room = dest && roomOf[end.floor + '|' + dest.room];
+  if (room && dir) {
+    const cx = room.cx ?? room.x + room.w / 2, cy = room.cy ?? room.y + room.h / 2;
+    const c = dir[0] * (cy - end.y) - dir[1] * (cx - end.x);
+    side = Math.abs(c) > 5 ? (c > 0 ? ' (오른쪽)' : ' (왼쪽)') : ' (정면)';
+  }
+  flush();
+  out.push({ t: `${dest ? dest.name : end.label ?? '도착 지점'} 도착${side}`, cls: 'end' });
+  return out;
+}
+
+let R = null;
+function update() {
+  $('from').value = M.nodes.length && places.some(p => p.node === from) ? from : '';
+  custom.hidden = !!$('from').value; if (!$('from').value) $('from').value = '';
+  $('to').value = to;
+  R = from === to ? { path: [from], m: 0 } : route(from, to);
+  if (R) {
+    const mins = Math.max(1, Math.round(R.m / 70));
+    $('dist').textContent = `${Math.round(R.m)}m`;
+    $('sub').textContent = `걸어서 약 ${mins}분 · ${N[from].floor}층 → ${N[to].floor}층`;
+    $('steps').innerHTML = (from === to ? [{ t: '이미 도착했어요', cls: 'end' }] : steps(R))
+      .map(s => `<li class="${s.cls ?? ''}">${s.t}</li>`).join('');
+  } else {
+    $('dist').textContent = '–'; $('sub').textContent = '경로를 찾지 못했어요'; $('steps').innerHTML = '';
+  }
+  try { if (/^[A-Za-z0-9_]+$/.test(from)) history.replaceState(null, '', '#' + from.replace(/_/g, '-')); else history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  draw(); follow();
+}
+
+function draw() {
+  for (const b of $('tabs').querySelectorAll('button')) {
+    const f = +b.dataset.f, onRoute = R && R.path.some(id => N[id].floor === f);
+    b.className = f === view ? 'on' : '';
+    b.innerHTML = `${f}F${onRoute ? '<span class="dot"></span>' : ''}`;
+  }
+  const other = R && R.path.some(id => N[id].floor !== view);
+  $('hint').textContent = other ? '경로가 다른 층으로 이어져요' : '';
+
+  ctx.fillStyle = tok('--surface'); ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = tok('--corridor'); ctx.lineWidth = 34; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const [a, b] of M.edges) { const A = N[a], B = N[b];
+    if (A.floor === view && B.floor === view) { ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); } }
+
+  const fl = M.floors.find(f => f.id === view);
+  const destRoom = M.destinations.find(d => d.node === to)?.room;
+  const fills = { stair: '--stair', ev: '--ev', wc: '--wc', void: '--void' };
+  const inks = { stair: '--stair-ink', ev: '--ev-ink' };
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const r of fl.rooms) {
+    const cx = r.cx ?? r.x + r.w / 2, cy = r.cy ?? r.y + r.h / 2;
+    const hit = r.name && r.name === destRoom && N[to].floor === view;
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(r.angle || 0);
+    ctx.fillStyle = hit ? tok('--route') : tok(fills[r.type] ?? '--room');
+    ctx.fillRect(-r.w / 2, -r.h / 2, r.w, r.h);
+    ctx.strokeStyle = tok('--room-edge'); ctx.lineWidth = 1.5; ctx.strokeRect(-r.w / 2, -r.h / 2, r.w, r.h);
+    if (r.type === 'void') { ctx.beginPath(); ctx.moveTo(-r.w/2, -r.h/2); ctx.lineTo(r.w/2, r.h/2); ctx.moveTo(r.w/2, -r.h/2); ctx.lineTo(-r.w/2, r.h/2); ctx.stroke(); }
+    ctx.restore();
+    if (!r.name) continue;
+    const size = Math.min(r.w, r.h) < 70 ? 13 : 17;
+    ctx.font = `${hit ? 700 : 500} ${size}px ${tok('--font-body')}`;
+    ctx.fillStyle = hit ? '#fff' : tok(inks[r.type] ?? '--room-ink');
+    const words = r.name.length > 5 && r.w < 110 ? r.name.split(' ') : [r.name];
+    words.forEach((w, i) => ctx.fillText(w, cx, cy + (i - (words.length - 1) / 2) * (size + 3)));
+  }
+
+  if (R && R.path.length > 1) {
+    ctx.strokeStyle = tok('--route'); ctx.lineWidth = 8; ctx.setLineDash([18, 10]);
+    for (let i = 1; i < R.path.length; i++) { const A = N[R.path[i - 1]], B = N[R.path[i]];
+      if (A.floor === view && B.floor === view) { ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); } }
+    ctx.setLineDash([]);
+    for (let i = 1; i < R.path.length; i++) { const A = N[R.path[i - 1]], B = N[R.path[i]];
+      if (A.floor !== B.floor && (A.floor === view || B.floor === view)) {
+        const p = A.floor === view ? A : B, up = (A.floor === view ? B : A).floor > view;
+        badge(p.x, p.y - 44, `${A.floor === view ? B.floor : A.floor}층 ${A.floor === view ? (up ? '↑' : '↓') : '도착'}`);
+      } }
+  }
+  const t = N[to]; if (t.floor === view) pin(t.x, t.y, tok('--route'));
+  const f = N[from];
+  if (f.floor === view) {
+    ctx.fillStyle = tok('--accent'); ctx.globalAlpha = .18; ctx.beginPath(); ctx.arc(f.x, f.y, 34, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.fillStyle = tok('--accent'); ctx.strokeStyle = tok('--surface'); ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(f.x, f.y, 15, 0, 7); ctx.fill(); ctx.stroke();
+    badge(f.x, f.y + 46, '출발');
+  }
+}
+function josa(w) { const c = w.charCodeAt(w.length - 1) - 0xac00; if (c < 0 || c > 11171) return '로'; const j = c % 28; return j === 0 || j === 8 ? '로' : '으로'; }
+function follow() {
+  const sc = $('scroll'); if (sc.scrollWidth <= sc.clientWidth) return;
+  const f = N[from]; if (f.floor !== view) return;
+  sc.scrollLeft = f.x * canvas.clientWidth / canvas.width - sc.clientWidth / 2;
+}
+function pin(x, y, c) { ctx.fillStyle = c; ctx.strokeStyle = tok('--surface'); ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(x, y, 13, 0, 7); ctx.fill(); ctx.stroke(); }
+function badge(x, y, text) {
+  ctx.font = `700 18px ${tok('--font-body')}`; const w = ctx.measureText(text).width + 22;
+  ctx.fillStyle = tok('--ink'); roundRect(x - w / 2, y - 16, w, 32, 8); ctx.fill();
+  ctx.fillStyle = tok('--bg'); ctx.fillText(text, x, y + 1);
+}
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+
+window.addEventListener('hashchange', () => { const h = location.hash.slice(1).replace(/-/g, '_'); if (N[h] && h !== from) { from = h; view = N[h].floor; update(); } });
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', draw);
+new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+document.fonts?.ready.then(draw);
+update();
+</script>

@@ -1,0 +1,319 @@
+<title>BLE 방 위치 측정</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: lab bench — controls strip, room plan canvas, readout column (stacks on phones) */
+:root {
+  --bg: #f3f4f7; --surface: #ffffff; --ink: #1b1d26; --muted: #646a7a; --line: #dde0e8;
+  --floor: #fafbfd; --grid1: #eef0f5; --grid2: #e2e5ee; --grid3: #cdd2de; --wall: #7d8495;
+  --accent: #d6336c; --phone: #d6336c; --true: #1f9d61; --chip: #eef0f5;
+  --s1: #0e8fb0; --s2: #c98a00; --s3: #7b55d8; --s4: #2c9b5a;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #14161c; --surface: #1d2028; --ink: #e6e8ef; --muted: #9298a8; --line: #2c303b;
+  --floor: #191c23; --grid1: #1f222a; --grid2: #262a34; --grid3: #353a47; --wall: #6b7285;
+  --accent: #ff5c8a; --phone: #ff5c8a; --true: #4fd38d; --chip: #262a34;
+  --s1: #4dd0e1; --s2: #f5c15b; --s3: #b58cff; --s4: #5fd38d; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #14161c; --surface: #1d2028; --ink: #e6e8ef; --muted: #9298a8; --line: #2c303b;
+  --floor: #191c23; --grid1: #1f222a; --grid2: #262a34; --grid3: #353a47; --wall: #6b7285;
+  --accent: #ff5c8a; --phone: #ff5c8a; --true: #4fd38d; --chip: #262a34;
+  --s1: #4dd0e1; --s2: #f5c15b; --s3: #b58cff; --s4: #5fd38d; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 14px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 18px 28px; }
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 14px; }
+header { display: grid; gap: 4px; }
+header small { color: var(--muted); font-size: 12px; letter-spacing: .06em; }
+h1 { margin: 0; font-size: 22px; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); line-height: 1.6; max-width: 70ch; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; align-items: start; }
+@media (max-width: 920px) { main { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
+.bar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 12px; }
+.bar .grp { display: flex; gap: 6px; align-items: center; }
+label, .lbl { font-size: 12px; color: var(--muted); }
+input[type=number] { font: inherit; font-variant-numeric: tabular-nums; width: 70px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+input[type=range] { width: 110px; accent-color: var(--accent); }
+.val { font-family: var(--font-mono); font-size: 12px; min-width: 44px; }
+button { font: inherit; font-size: 13px; border-radius: 6px; padding: 6px 11px; cursor: pointer; border: 1px solid var(--line); background: var(--chip); color: var(--ink); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+canvas { width: 100%; display: block; touch-action: none; }
+.side { display: grid; gap: 14px; }
+h2 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+.big { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.kv { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 10px; align-items: center; font-variant-numeric: tabular-nums; font-size: 13px; }
+.dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+th, td { padding: 5px 4px; border-bottom: 1px solid var(--line); text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.note { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.note code { font-family: var(--font-mono); font-size: 11px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <small>ESP32 × BLE 실내 측위 · 동국대 신공학관 내비게이션 프로젝트</small>
+    <h1>BLE 방 위치 측정</h1>
+    <p>ESP32 스테이션 4대가 폰 비콘의 신호 세기(RSSI)로 거리를 추정하고, 그 거리들에 가장 잘 맞는 점을 폰 위치로 계산해요.
+      스테이션(S1~S4)과 <b style="color:var(--true)">실제 폰(초록)</b>을 끌어 보세요. 빨간 점이 계산된 위치예요.</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="bar">
+        <div class="grp"><label for="w">가로</label><input id="w" type="number" step="0.1" min="1" max="15" value="5.0"><span class="lbl">m</span></div>
+        <div class="grp"><label for="h">세로</label><input id="h" type="number" step="0.1" min="1" max="15" value="4.0"><span class="lbl">m</span></div>
+        <div class="grp"><label for="noise">신호 흔들림</label><input id="noise" type="range" min="0" max="8" step="0.5" value="3"><span class="val" id="noiseV"></span></div>
+        <div class="grp"><label for="nexp">경로손실 n</label><input id="nexp" type="range" min="2" max="3.5" step="0.1" value="2.5"><span class="val" id="nexpV"></span></div>
+      </div>
+      <canvas id="c" aria-label="방 평면도"></canvas>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--true)"></span> 실제 폰</span>
+        <span><span class="dot" style="background:var(--phone)"></span> 계산된 위치</span>
+        <span>점선 원 = 각 스테이션이 추정한 거리</span>
+        <span>격자 굵은 선 1m · 얇은 선 50cm · 10cm 단위로 이동</span>
+      </div>
+    </section>
+
+    <div class="side">
+      <section class="card">
+        <h2>현재 오차</h2>
+        <div class="big" id="err">–</div>
+        <div class="sub" id="errSub"></div>
+      </section>
+
+      <section class="card">
+        <h2>스테이션 신호 (시뮬레이션)</h2>
+        <div class="kv" id="sig"></div>
+      </section>
+
+      <section class="card">
+        <h2>스테이션 배치 비교</h2>
+        <div class="presets">
+          <button type="button" data-p="corner">네 모서리</button>
+          <button type="button" data-p="line">일직선</button>
+          <button type="button" data-p="side">한쪽에 몰림</button>
+        </div>
+        <p class="note" style="margin:8px 0 0">같은 흔들림에서도 배치에 따라 오차가 크게 달라져요. 일직선이면 직선 양쪽을 구분하지 못해요.</p>
+      </section>
+
+      <section class="card">
+        <h2>오차 기록 <span id="avg"></span></h2>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <button type="button" class="primary" id="rec">지금 기록</button>
+          <button type="button" id="clr">지우기</button>
+        </div>
+        <table><thead><tr><th>#</th><th>배치</th><th>흔들림</th><th>오차</th></tr></thead><tbody id="log"></tbody></table>
+      </section>
+
+      <p class="note">실제 장치 버전은 노트북 서버(<code>node server.js</code>)의 <code>/room.html</code>에서 ESP32 신호로 같은 계산을 해요.
+        이 페이지는 그 계산을 신호 모델 <code>RSSI = -59 − 10·n·log₁₀(거리)</code>에 무작위 흔들림을 더해 재현한 시뮬레이션이에요.</p>
+    </div>
+  </main>
+</div>
+
+<script>
+const IDS = ['S1', 'S2', 'S3', 'S4'];
+const TX = -59, WINDOW = 5;
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+const $ = id => document.getElementById(id);
+const tok = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const r1 = v => Math.round(v * 10) / 10;
+const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+
+let W = 5, H = 4, preset = '네 모서리';
+let st = {}, phone = { x: 2.0, y: 1.5 }, est = null, hist = {}, dist = {}, rssi = {}, smooth = null;
+const errs = [], log = [];
+
+function setPreset(p) {
+  const m = 0.5;
+  if (p === 'corner') { st = { S1: { x: m, y: m }, S2: { x: W - m, y: m }, S3: { x: W - m, y: H - m }, S4: { x: m, y: H - m } }; preset = '네 모서리'; }
+  if (p === 'line')   { st = { S1: { x: m, y: H / 2 }, S2: { x: m + (W - 2 * m) / 3, y: H / 2 }, S3: { x: m + 2 * (W - 2 * m) / 3, y: H / 2 }, S4: { x: W - m, y: H / 2 } }; preset = '일직선'; }
+  if (p === 'side')   { st = { S1: { x: m, y: m }, S2: { x: m + 1, y: m }, S3: { x: m, y: m + 1 }, S4: { x: m + 1, y: m + 1 } }; preset = '한쪽에 몰림'; }
+  for (const k in st) st[k] = { x: r1(st[k].x), y: r1(st[k].y) };
+  hist = {}; smooth = null; errs.length = 0;
+}
+try { const s = JSON.parse(localStorage.getItem('ble-room') || 'null'); if (s) { W = s.W; H = s.H; st = s.st; phone = s.phone; preset = s.preset || '직접 배치'; } } catch (e) {}
+if (!st.S1) setPreset('corner');
+const persist = () => { try { localStorage.setItem('ble-room', JSON.stringify({ W, H, st, phone, preset })); } catch (e) {} };
+
+// ---- 신호 시뮬레이션 + 위치 계산 (서버와 같은 방식) ----
+function gauss() { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+function tick() {
+  const sigma = +$('noise').value, n = +$('nexp').value;
+  const parts = [];
+  for (const id of IDS) {
+    const d = Math.max(Math.hypot(phone.x - st[id].x, phone.y - st[id].y), 0.1);
+    const r = Math.round(TX - 10 * n * Math.log10(d) + gauss() * sigma);
+    (hist[id] ||= []).push(r); if (hist[id].length > WINDOW) hist[id].shift();
+    const avg = hist[id].reduce((a, b) => a + b, 0) / hist[id].length;
+    rssi[id] = Math.round(avg);
+    dist[id] = Math.pow(10, (TX - avg) / (10 * n));
+    parts.push({ ...st[id], d: dist[id] });
+  }
+  let best = null, be = Infinity;
+  for (let x = 0; x <= W + 1e-9; x += 0.05)
+    for (let y = 0; y <= H + 1e-9; y += 0.05) {
+      let e = 0;
+      for (const p of parts) { const df = Math.hypot(x - p.x, y - p.y) - p.d; e += df * df / Math.max(p.d, 0.3) ** 2; }
+      if (e < be) { be = e; best = { x, y }; }
+    }
+  smooth = smooth ? { x: smooth.x * 0.5 + best.x * 0.5, y: smooth.y * 0.5 + best.y * 0.5 } : best;
+  est = smooth;
+  const e = Math.hypot(est.x - phone.x, est.y - phone.y);
+  errs.push(e); if (errs.length > 30) errs.shift();
+  render();
+}
+
+// ---- 그리기 ----
+let S = 100, OX = 44, OY = 14;
+function layout() {
+  const cssW = c.clientWidth || 700;
+  S = (cssW - OX - 16) / W;
+  const cssH = H * S + OY + 30;
+  c.style.height = cssH + 'px';
+  const dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(cssW * dpr); c.height = Math.round(cssH * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+const P = (x, y) => [OX + x * S, OY + y * S];
+function draw() {
+  layout();
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.fillStyle = tok('--floor'); ctx.fillRect(OX, OY, W * S, H * S);
+  const grid = (step, col) => {
+    ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.beginPath();
+    for (let x = 0; x <= W + 1e-9; x += step) { ctx.moveTo(OX + x * S, OY); ctx.lineTo(OX + x * S, OY + H * S); }
+    for (let y = 0; y <= H + 1e-9; y += step) { ctx.moveTo(OX, OY + y * S); ctx.lineTo(OX + W * S, OY + y * S); }
+    ctx.stroke();
+  };
+  if (S * 0.1 >= 9) grid(0.1, tok('--grid1'));
+  grid(0.5, tok('--grid2')); grid(1, tok('--grid3'));
+  ctx.strokeStyle = tok('--wall'); ctx.lineWidth = 2.5; ctx.strokeRect(OX, OY, W * S, H * S);
+  ctx.fillStyle = tok('--muted'); ctx.font = `12px ${tok('--font-mono')}`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let x = 0; x <= W + 1e-9; x += 1) ctx.fillText(x + 'm', OX + x * S, OY + H * S + 8);
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let y = 0; y <= H + 1e-9; y += 1) ctx.fillText(y + 'm', OX - 8, OY + y * S);
+
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, c.clientWidth, H * S + OY + 30); ctx.clip();
+  IDS.forEach((id, i) => {
+    if (dist[id] == null) return;
+    const [a, b] = P(st[id].x, st[id].y);
+    ctx.strokeStyle = tok('--s' + (i + 1)); ctx.globalAlpha = .45; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.arc(a, b, dist[id] * S, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+  });
+  ctx.restore();
+
+  if (est) {
+    const [pa, pb] = P(phone.x, phone.y), [ea, eb] = P(est.x, est.y);
+    ctx.strokeStyle = tok('--muted'); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(pa, pb); ctx.lineTo(ea, eb); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = tok('--phone'); ctx.globalAlpha = .2; ctx.beginPath(); ctx.arc(ea, eb, 18, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    ctx.fillStyle = tok('--phone'); ctx.strokeStyle = tok('--surface'); ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(ea, eb, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  // 실제 폰
+  {
+    const [a, b] = P(phone.x, phone.y);
+    ctx.fillStyle = tok('--true'); ctx.strokeStyle = tok('--surface'); ctx.lineWidth = 2.5;
+    roundRect(a - 8, b - 13, 16, 26, 4); ctx.fill(); ctx.stroke();
+    if (drag === 'phone') label(a, b - 24, `(${phone.x.toFixed(1)}, ${phone.y.toFixed(1)})`);
+  }
+  IDS.forEach((id, i) => {
+    const [a, b] = P(st[id].x, st[id].y);
+    ctx.fillStyle = tok('--s' + (i + 1)); ctx.strokeStyle = drag === id ? tok('--ink') : tok('--surface'); ctx.lineWidth = drag === id ? 3 : 2;
+    roundRect(a - 14, b - 14, 28, 28, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = `700 12px ${tok('--font-body')}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(id, a, b + 1);
+    if (drag === id) label(a, b - 28, `(${st[id].x.toFixed(1)}, ${st[id].y.toFixed(1)})`);
+  });
+}
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function label(x, y, t) {
+  ctx.font = `600 12px ${tok('--font-mono')}`; const w = ctx.measureText(t).width + 12;
+  ctx.fillStyle = tok('--ink'); roundRect(x - w / 2, y - 11, w, 22, 5); ctx.fill();
+  ctx.fillStyle = tok('--bg'); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(t, x, y + 1);
+}
+
+function render() {
+  draw();
+  if (est) {
+    const e = Math.hypot(est.x - phone.x, est.y - phone.y);
+    const mean = errs.reduce((a, b) => a + b, 0) / errs.length;
+    $('err').textContent = `${Math.round(e * 100)} cm`;
+    $('errSub').textContent = `최근 ${errs.length}회 평균 ${Math.round(mean * 100)}cm · 계산 위치 (${est.x.toFixed(2)}, ${est.y.toFixed(2)}) m`;
+  }
+  $('sig').innerHTML = IDS.map((id, i) => `<span class="dot" style="background:var(--s${i + 1})"></span>
+    <span>${id} <span class="sub">(${st[id].x.toFixed(1)}, ${st[id].y.toFixed(1)})</span></span>
+    <span>${rssi[id] ?? '–'} dBm · ≈${dist[id] != null ? dist[id].toFixed(1) : '–'}m</span>`).join('');
+  $('noiseV').textContent = `±${(+$('noise').value).toFixed(1)}dB`;
+  $('nexpV').textContent = (+$('nexp').value).toFixed(1);
+}
+
+// ---- 끌기 ----
+let drag = null;
+function toM(e) { const r = c.getBoundingClientRect(); return { x: (e.clientX - r.left - OX) / S, y: (e.clientY - r.top - OY) / S }; }
+function hitTest(m) {
+  const tol = 20 / S;
+  let hit = null, bd = tol;
+  for (const id of IDS) { const d = Math.hypot(st[id].x - m.x, st[id].y - m.y); if (d < bd) { bd = d; hit = id; } }
+  if (!hit && Math.hypot(phone.x - m.x, phone.y - m.y) < 22 / S) hit = 'phone';
+  return hit;
+}
+c.addEventListener('pointerdown', e => {
+  const m = toM(e), hit = hitTest(m);
+  if (hit) { drag = hit; c.setPointerCapture(e.pointerId); c.style.cursor = 'grabbing'; }
+  else if (m.x >= 0 && m.y >= 0 && m.x <= W && m.y <= H) { phone = { x: r1(m.x), y: r1(m.y) }; drag = 'phone'; c.setPointerCapture(e.pointerId); hist = {}; smooth = null; errs.length = 0; }
+  render();
+});
+c.addEventListener('pointermove', e => {
+  const m = toM(e);
+  if (!drag) { c.style.cursor = hitTest(m) ? 'grab' : 'crosshair'; return; }
+  const p = { x: r1(clamp(m.x, 0, W)), y: r1(clamp(m.y, 0, H)) };
+  if (drag === 'phone') phone = p; else { st[drag] = p; preset = '직접 배치'; }
+  render();
+});
+const end = () => { if (!drag) return; drag = null; c.style.cursor = 'grab'; hist = {}; smooth = null; errs.length = 0; persist(); render(); };
+c.addEventListener('pointerup', end); c.addEventListener('pointercancel', end);
+
+function resize() {
+  W = r1(clamp(+$('w').value || W, 1, 15)); H = r1(clamp(+$('h').value || H, 1, 15));
+  for (const id of IDS) st[id] = { x: Math.min(st[id].x, W), y: Math.min(st[id].y, H) };
+  phone = { x: Math.min(phone.x, W), y: Math.min(phone.y, H) };
+  hist = {}; smooth = null; errs.length = 0; persist(); render();
+}
+$('w').value = W.toFixed(1); $('h').value = H.toFixed(1);
+$('w').onchange = resize; $('h').onchange = resize;
+$('noise').oninput = () => { errs.length = 0; render(); };
+$('nexp').oninput = () => { errs.length = 0; render(); };
+document.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { setPreset(b.dataset.p); persist(); render(); });
+
+function renderLog() {
+  $('log').innerHTML = log.map((r, i) => `<tr><td>${i + 1}</td><td>${r.p}</td><td>±${r.n}dB</td><td>${r.e}cm</td></tr>`).join('');
+  $('avg').textContent = log.length ? `· 평균 ${Math.round(log.reduce((s, r) => s + r.e, 0) / log.length)}cm` : '';
+}
+$('rec').onclick = () => {
+  if (!errs.length) return;
+  log.push({ p: preset, n: (+$('noise').value).toFixed(1), e: Math.round(errs.reduce((a, b) => a + b, 0) / errs.length * 100) });
+  renderLog();
+};
+$('clr').onclick = () => { log.length = 0; renderLog(); };
+
+window.addEventListener('resize', render);
+new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', render);
+document.fonts?.ready.then(render);
+for (let i = 0; i < 8; i++) tick();
+setInterval(tick, 350);
+</script>

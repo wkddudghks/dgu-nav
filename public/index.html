@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DGU 실내 내비게이션</title>
+<style>
+  :root { --bg:#15171d; --panel:#1f222b; --line:#2b2f3a; --room:#1d2029; --text:#dde1ea; --muted:#8a92a3;
+          --accent:#ff4d5a; --cyan:#4dd0e1; --stair:#4a3b26; --ev:#234a3c; --wc:#2c303a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  header { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:12px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; border-left:4px solid var(--accent); padding-left:8px; }
+  .tabs button { background:#2a2e3a; color:var(--muted); border:0; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:14px; }
+  .tabs button.on { background:var(--accent); color:#fff; }
+  .tabs button.here::after { content:" ●"; color:var(--cyan); }
+  select, label { font-size:14px; }
+  select { background:#2a2e3a; color:var(--text); border:0; padding:6px 10px; border-radius:6px; }
+  label { color:var(--muted); display:flex; gap:6px; align-items:center; cursor:pointer; }
+  main { display:grid; grid-template-columns: 1fr 280px; }
+  #wrap { overflow:auto; }
+  canvas { display:block; width:100%; height:auto; min-width:700px; }
+  aside { background:var(--panel); border-left:1px solid var(--line); padding:14px; font-size:13px; }
+  aside h2 { font-size:13px; color:var(--muted); margin:14px 0 6px; font-weight:600; }
+  aside h2:first-child { margin-top:0; }
+  #where { font-size:18px; font-weight:700; }
+  #steps { margin:0; padding-left:18px; line-height:1.7; }
+  #steps li.floorchange { color:var(--cyan); font-weight:600; }
+  #rssi { font-family:ui-monospace, monospace; font-size:12px; line-height:1.6; color:var(--muted); }
+  #rssi b { color:var(--cyan); }
+  #demoHint { color:var(--accent); font-size:12px; margin-top:6px; display:none; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } aside { border-left:0; border-top:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">신공학관 내비게이션</h1>
+  <div class="tabs" id="tabs"></div>
+  <select id="dest"></select>
+  <label><input type="checkbox" id="demo"> 데모 모드</label>
+</header>
+<main>
+  <div id="wrap"><canvas id="map" width="1620" height="700"></canvas></div>
+  <aside>
+    <h2>현재 위치</h2>
+    <div id="where">신호 대기 중…</div>
+    <div id="demoHint">지도에서 복도 지점을 클릭하면 그 위치에 있는 것처럼 동작해요.</div>
+    <h2>길 안내</h2>
+    <ol id="steps"><li>목적지를 선택하세요</li></ol>
+    <h2>스테이션 신호</h2>
+    <div id="rssi"></div>
+  </aside>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const canvas = document.getElementById('map');
+const ctx = canvas.getContext('2d');
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let lastDist = {};
+let M, nodeById, adj, viewFloor, here = null, liveNode = null, autoFloor = true, lastStatus = {}, liveStation = null;
+
+fetch('map.json').then(r => r.json()).then(init);
+
+function init(map) {
+  M = map;
+  document.getElementById('title').textContent = `${M.building} 내비게이션`;
+  nodeById = Object.fromEntries(M.nodes.map(n => [n.id, n]));
+  adj = {};
+  for (const [a, b, w] of M.edges) {
+    const A = nodeById[a], B = nodeById[b];
+    const cost = w ?? Math.hypot(A.x - B.x, A.y - B.y) / M.pxPerM; // 미터
+    (adj[a] ||= []).push([b, cost]); (adj[b] ||= []).push([a, cost]);
+  }
+  if (M.canvas) { canvas.width = M.canvas.w; canvas.height = M.canvas.h; }
+  viewFloor = M.floors[0].id;
+  const tabs = document.getElementById('tabs');
+  for (const f of M.floors) {
+    const b = document.createElement('button');
+    b.textContent = f.id + 'F'; b.dataset.floor = f.id;
+    b.onclick = () => { viewFloor = f.id; autoFloor = false; render(); };
+    tabs.appendChild(b);
+  }
+  const sel = document.getElementById('dest');
+  sel.add(new Option('목적지 선택', ''));
+  const groups = {};
+  for (const d of M.destinations) {
+    const f = d.floor ?? nodeById[d.node].floor;
+    if (!groups[f]) { groups[f] = document.createElement('optgroup'); groups[f].label = `${f}층`; sel.appendChild(groups[f]); }
+    groups[f].appendChild(new Option(d.name, d.node));
+  }
+  sel.onchange = () => { autoFloor = true; render(); };
+  document.getElementById('demo').onchange = e => {
+    document.getElementById('demoHint').style.display = e.target.checked ? 'block' : 'none';
+    here = e.target.checked ? here : liveNode; render();
+  };
+  canvas.onclick = onCanvasClick;
+  connect();
+  render();
+}
+
+// 다익스트라 최단 경로
+function route(from, to) {
+  const dist = { [from]: 0 }, prev = {}, done = new Set();
+  while (true) {
+    let u = null;
+    for (const k in dist) if (!done.has(k) && (u === null || dist[k] < dist[u])) u = k;
+    if (u === null) return null;
+    if (u === to) break;
+    done.add(u);
+    for (const [v, w] of adj[u] || []) {
+      if (dist[u] + w < (dist[v] ?? Infinity)) { dist[v] = dist[u] + w; prev[v] = u; }
+    }
+  }
+  const path = [to];
+  while (path[0] !== from) path.unshift(prev[path[0]]);
+  return { path, meters: dist[to] };
+}
+
+function instructions(r, destName) {
+  const out = [];
+  let seg = 0, start = nodeById[r.path[0]];
+  for (let i = 1; i < r.path.length; i++) {
+    const a = nodeById[r.path[i - 1]], b = nodeById[r.path[i]];
+    if (a.floor !== b.floor) {
+      if (seg > 0.5) out.push({ t: `${a.label ?? '복도'} 쪽으로 약 ${Math.round(seg)}m 이동` });
+      const how = /엘리베이터/.test(a.label ?? '') ? '엘리베이터' : (a.label ?? '계단');
+      out.push({ t: `${how}로 ${b.floor}층 ${b.floor > a.floor ? '올라가기' : '내려가기'}`, floor: true });
+      seg = 0;
+    } else seg += Math.hypot(a.x - b.x, a.y - b.y) / M.pxPerM;
+  }
+  if (seg > 0.5) out.push({ t: `약 ${Math.round(seg)}m 직진` });
+  out.push({ t: `${destName} 도착` });
+  return out;
+}
+
+function render() {
+  if (!M) return;
+  const dest = document.getElementById('dest').value;
+  const destName = document.getElementById('dest').selectedOptions[0]?.text;
+  const r = here && dest ? route(here, dest) : null;
+  if (autoFloor && here) viewFloor = nodeById[here].floor;
+
+  for (const b of document.querySelectorAll('#tabs button')) {
+    b.classList.toggle('on', +b.dataset.floor === viewFloor);
+    b.classList.toggle('here', here && +b.dataset.floor === nodeById[here].floor);
+  }
+
+  ctx.fillStyle = css('--bg'); ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const floor = M.floors.find(f => f.id === viewFloor);
+
+  // 복도
+  ctx.strokeStyle = css('--line'); ctx.lineWidth = 30; ctx.lineCap = 'round';
+  for (const [a, b] of M.edges) {
+    const A = nodeById[a], B = nodeById[b];
+    if (A.floor === viewFloor && B.floor === viewFloor) { ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); }
+  }
+  // 방
+  const colors = { stair: css('--stair'), ev: css('--ev'), wc: css('--wc'), court: '#1a2a24', void: '#181b22' };
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const rm of floor.rooms) {
+    const cx = rm.cx ?? rm.x + rm.w / 2, cy = rm.cy ?? rm.y + rm.h / 2;
+    const isDest = M.destinations.some(d => d.node === dest && (d.room ?? d.name) === rm.name);
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(rm.angle || 0);
+    ctx.fillStyle = isDest ? css('--accent') : (colors[rm.type] ?? css('--room'));
+    ctx.fillRect(-rm.w / 2, -rm.h / 2, rm.w, rm.h);
+    ctx.strokeStyle = '#2f3440'; ctx.lineWidth = 1; ctx.strokeRect(-rm.w / 2, -rm.h / 2, rm.w, rm.h);
+    if (rm.type === 'void') { ctx.beginPath(); ctx.moveTo(-rm.w/2,-rm.h/2); ctx.lineTo(rm.w/2,rm.h/2); ctx.moveTo(rm.w/2,-rm.h/2); ctx.lineTo(-rm.w/2,rm.h/2); ctx.stroke(); }
+    ctx.restore();
+    if (!rm.name) continue;
+    ctx.fillStyle = isDest ? '#fff' : (rm.type === 'stair' ? '#f5c15b' : rm.type === 'ev' ? '#5ff0c0' : '#9aa3b5');
+    const size = Math.min(rm.w, rm.h) < 70 ? 11 : 14;
+    ctx.font = `600 ${size}px system-ui, sans-serif`;
+    const words = rm.name.length > 5 && rm.w < 100 ? rm.name.split(' ') : [rm.name];
+    words.forEach((w, i) => ctx.fillText(w, cx, cy + (i - (words.length - 1) / 2) * (size + 2)));
+  }
+  // 경로
+  if (r) {
+    ctx.strokeStyle = css('--accent'); ctx.lineWidth = 6; ctx.setLineDash([14, 8]);
+    for (let i = 1; i < r.path.length; i++) {
+      const A = nodeById[r.path[i - 1]], B = nodeById[r.path[i]];
+      if (A.floor === viewFloor && B.floor === viewFloor) { ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); }
+    }
+    ctx.setLineDash([]);
+    const d = nodeById[dest];
+    if (d.floor === viewFloor) { ctx.fillStyle = css('--accent'); ctx.beginPath(); ctx.arc(d.x, d.y, 9, 0, 7); ctx.fill(); }
+  }
+  // 스테이션
+  for (const [sid, nid] of Object.entries(M.stations)) {
+    const n = nodeById[nid]; if (n.floor !== viewFloor) continue;
+    const on = lastStatus[sid] != null;
+    ctx.fillStyle = on ? css('--cyan') : '#3a4050';
+    ctx.beginPath(); ctx.arc(n.x, n.y - 24, 5, 0, 7); ctx.fill();
+    ctx.font = '11px ui-monospace, monospace'; ctx.fillText(sid.replace('STATION_', 'S'), n.x, n.y - 36);
+  }
+  // 데모용 클릭 지점
+  if (document.getElementById('demo').checked) {
+    ctx.fillStyle = 'rgba(255,255,255,.25)';
+    for (const n of M.nodes) if (n.floor === viewFloor) { ctx.beginPath(); ctx.arc(n.x, n.y, 6, 0, 7); ctx.fill(); }
+  }
+  // 현재 위치
+  if (here && nodeById[here].floor === viewFloor) {
+    const n = nodeById[here];
+    ctx.fillStyle = 'rgba(255,77,90,.25)'; ctx.beginPath(); ctx.arc(n.x, n.y, 26, 0, 7); ctx.fill();
+    ctx.fillStyle = css('--accent'); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(n.x, n.y, 12, 0, 7); ctx.fill(); ctx.stroke();
+  }
+
+  // 사이드 패널
+  document.getElementById('where').textContent = here
+    ? `${nodeById[here].floor}층 · ${nodeById[here].label ?? nearestRoom(here)} 근처`
+    : '신호 대기 중…';
+  const steps = document.getElementById('steps');
+  if (!dest) steps.innerHTML = '<li>목적지를 선택하세요</li>';
+  else if (!here) steps.innerHTML = '<li>현재 위치를 찾는 중이에요</li>';
+  else if (!r) steps.innerHTML = '<li>경로를 찾을 수 없어요 (map.json의 edges 확인)</li>';
+  else steps.innerHTML = instructions(r, destName).map(s => `<li class="${s.floor ? 'floorchange' : ''}">${s.t}</li>`).join('')
+       + `<li style="list-style:none;color:var(--muted);margin-left:-18px">총 약 ${Math.round(r.meters)}m</li>`;
+  document.getElementById('rssi').innerHTML = Object.keys(M.stations).map(id =>
+    `<span title="${M.stationNotes?.[id] ?? ''}">${id === liveStation ? '<b>' : ''}${id} (${nodeById[M.stations[id]].floor}F): ${lastStatus[id] ?? '--'} dBm${lastDist[id] != null ? ` (약 ${lastDist[id]}m)` : ''}${id === liveStation ? ' ◀</b>' : ''}</span>`
+  ).join('<br>');
+}
+
+function nearestRoom(nid) {
+  const n = nodeById[nid], f = M.floors.find(f => f.id === n.floor);
+  let best = null, bd = Infinity;
+  for (const r of f.rooms) {
+    if (!r.name || r.type === 'void') continue;
+    const d = Math.hypot((r.cx ?? r.x + r.w / 2) - n.x, (r.cy ?? r.y + r.h / 2) - n.y);
+    if (d < bd) { bd = d; best = r.name; }
+  }
+  return best;
+}
+
+function onCanvasClick(e) {
+  if (!document.getElementById('demo').checked) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * canvas.width / rect.width;
+  const y = (e.clientY - rect.top) * canvas.height / rect.height;
+  let best = null, bd = 40;
+  for (const n of M.nodes) if (n.floor === viewFloor) {
+    const d = Math.hypot(n.x - x, n.y - y); if (d < bd) { bd = d; best = n.id; }
+  }
+  if (best) { here = best; render(); }
+}
+
+function connect() {
+  if (typeof io === 'undefined') return; // 서버 없이 파일로 열었을 때 (데모 모드만 사용)
+  io().on('update', d => {
+    lastStatus = d.status; lastDist = d.dist || {}; liveStation = d.station; liveNode = d.node;
+    if (!document.getElementById('demo').checked) {
+      if (d.node !== here) autoFloor = true;
+      here = d.node;
+    }
+    render();
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스테이션 간격 보정</title>
+<style>
+  :root { --bg:#15171d; --panel:#1f222b; --line:#2b2f3a; --text:#dde1ea; --muted:#8a92a3; --accent:#ff4d5a; --cyan:#4dd0e1; --ok:#5fd38d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; padding:16px; }
+  .wrap { max-width: 1000px; margin: 0 auto; display:grid; gap:14px; }
+  h1 { font-size:18px; margin:0; border-left:4px solid var(--accent); padding-left:8px; }
+  p.lead { color:var(--muted); margin:4px 0 0; font-size:13px; line-height:1.6; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  h2 { font-size:13px; color:var(--muted); margin:0 0 10px; font-weight:600; }
+  canvas { width:100%; height:auto; display:block; }
+  .big { font-size:30px; font-weight:700; font-variant-numeric: tabular-nums; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:10px; }
+  .st { background:#262a35; border-radius:8px; padding:10px; font-variant-numeric: tabular-nums; }
+  .st b { color:var(--cyan); }
+  .st small { color:var(--muted); display:block; margin-top:2px; }
+  input { background:#2a2e3a; color:var(--text); border:0; border-radius:6px; padding:8px 10px; width:110px; font-size:15px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  button.ghost { background:#2a2e3a; color:var(--text); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric: tabular-nums; font-size:14px; }
+  th, td { text-align:right; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; }
+  .muted { color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>스테이션 간격 보정</h1>
+    <p class="lead">설정기의 버튼 1~4로 각 스테이션이 기준점에서 몇 m 떨어져 있는지 맞추면, 아래 복도 그림과 폰 추정 위치가 바로 바뀌어요.
+      줄자로 폰의 실제 위치를 재서 기록하면 오차를 계산해 줘요.</p>
+  </div>
+
+  <section>
+    <h2>복도 (기준점 0m에서 시작)</h2>
+    <canvas id="c" width="1000" height="190"></canvas>
+  </section>
+
+  <section class="row" style="justify-content:space-between">
+    <div><h2>폰 추정 위치</h2><div class="big" id="est">신호 없음</div></div>
+    <div class="row">
+      <label for="actual" class="muted">실제 위치(m)</label>
+      <input id="actual" type="number" step="0.5" min="0" placeholder="예: 7.5">
+      <button id="rec" type="button">오차 기록</button>
+      <button id="clear" type="button" class="ghost">지우기</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>스테이션별 신호</h2>
+    <div class="grid" id="sts"></div>
+  </section>
+
+  <section>
+    <h2>오차 기록 <span class="muted" id="avg"></span></h2>
+    <table><thead><tr><th>#</th><th>실제(m)</th><th>추정(m)</th><th>오차(m)</th><th>스테이션 위치(m)</th></tr></thead>
+      <tbody id="log"><tr><td colspan="5" class="muted">폰을 들고 서서 실제 위치를 입력하고 "오차 기록"을 누르세요.</td></tr></tbody></table>
+  </section>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const IDS = ['STATION_01', 'STATION_02', 'STATION_03', 'STATION_04'];
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+let state = { positions: {}, estimate: null, parts: [] }, status = {};
+const log = [];
+
+function draw() {
+  const pos = IDS.map(id => state.positions[id] ?? 0);
+  const maxM = Math.max(10, ...pos, state.estimate ?? 0) + 2;
+  const L = 50, R = c.width - 30, Y = 110, X = m => L + (R - L) * m / maxM;
+  ctx.clearRect(0, 0, c.width, c.height);
+  // 복도
+  ctx.fillStyle = '#2b2f3a'; ctx.fillRect(L - 10, Y - 18, R - L + 20, 36);
+  // 눈금
+  ctx.fillStyle = '#8a92a3'; ctx.font = '12px system-ui'; ctx.textAlign = 'center';
+  const step = maxM > 40 ? 5 : maxM > 20 ? 2 : 1;
+  for (let m = 0; m <= maxM; m += step) {
+    ctx.fillRect(X(m), Y + 20, 1, m % (step * 5) === 0 ? 10 : 5);
+    if (m % (step * (maxM > 20 ? 5 : 2)) === 0) ctx.fillText(m + 'm', X(m), Y + 44);
+  }
+  // 간격 표시
+  ctx.fillStyle = '#8a92a3';
+  for (let i = 1; i < 4; i++) {
+    const a = pos[i - 1], b = pos[i];
+    ctx.fillText(`↔ ${b - a}m`, X((a + b) / 2), Y - 62);
+  }
+  // 스테이션
+  IDS.forEach((id, i) => {
+    const x = X(pos[i]), on = status[id] != null;
+    ctx.fillStyle = on ? '#4dd0e1' : '#4a5060';
+    ctx.beginPath(); ctx.moveTo(x, Y - 22); ctx.lineTo(x - 9, Y - 38); ctx.lineTo(x + 9, Y - 38); ctx.fill();
+    ctx.font = '600 14px system-ui'; ctx.fillText(`S${i + 1}`, x, Y - 44);
+  });
+  // 폰
+  if (state.estimate != null) {
+    const x = X(state.estimate);
+    ctx.fillStyle = 'rgba(255,77,90,.25)'; ctx.beginPath(); ctx.arc(x, Y, 18, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ff4d5a'; ctx.beginPath(); ctx.arc(x, Y, 9, 0, 7); ctx.fill();
+  }
+  // 실제 위치(입력값)
+  const a = parseFloat(document.getElementById('actual').value);
+  if (Number.isFinite(a)) {
+    ctx.strokeStyle = '#5fd38d'; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(X(a), Y - 20); ctx.lineTo(X(a), Y + 20); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#5fd38d'; ctx.font = '12px system-ui'; ctx.fillText('실제', X(a), Y + 62);
+  }
+}
+
+function render() {
+  document.getElementById('est').textContent = state.estimate == null ? '신호 없음' : `${state.estimate.toFixed(1)} m`;
+  document.getElementById('sts').innerHTML = IDS.map((id, i) => {
+    const p = state.parts.find(x => x.id === id);
+    return `<div class="st"><b>S${i + 1}</b> · ${state.positions[id] ?? '-'}m 지점
+      <small>${p ? `${p.rssi} dBm → 약 ${p.d.toFixed(1)}m 거리` : '신호 없음'}</small></div>`;
+  }).join('');
+  draw();
+}
+
+function renderLog() {
+  const body = document.getElementById('log');
+  if (!log.length) { body.innerHTML = '<tr><td colspan="5" class="muted">폰을 들고 서서 실제 위치를 입력하고 "오차 기록"을 누르세요.</td></tr>'; document.getElementById('avg').textContent = ''; return; }
+  body.innerHTML = log.map((r, i) => `<tr><td>${i + 1}</td><td>${r.actual.toFixed(1)}</td><td>${r.est.toFixed(1)}</td>
+    <td>${r.err.toFixed(1)}</td><td>${r.pos}</td></tr>`).join('');
+  const mean = log.reduce((s, r) => s + r.err, 0) / log.length;
+  document.getElementById('avg').textContent = `· 평균 오차 ${mean.toFixed(2)}m (${log.length}회)`;
+}
+
+document.getElementById('rec').onclick = () => {
+  const a = parseFloat(document.getElementById('actual').value);
+  if (!Number.isFinite(a)) { document.getElementById('actual').focus(); return; }
+  if (state.estimate == null) { document.getElementById('avg').textContent = '· 폰 신호가 없어서 기록하지 못했어요'; return; }
+  log.push({ actual: a, est: state.estimate, err: Math.abs(state.estimate - a), pos: IDS.map(id => state.positions[id]).join(' / ') });
+  renderLog();
+};
+document.getElementById('clear').onclick = () => { log.length = 0; renderLog(); };
+document.getElementById('actual').oninput = draw;
+
+fetch('/corridor').then(r => r.json()).then(d => { state.positions = d.positions; state.estimate = d.estimate; render(); });
+io().on('update', d => { status = d.status; if (d.corridor) state = d.corridor; render(); });
+</script>
+</body>
+</html>

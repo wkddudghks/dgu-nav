@@ -1,0 +1,11 @@
+# Render 설정 파일 (Blueprint). Render가 이 파일을 보고 자동으로 서버를 만들어요.
+services:
+  - type: web
+    name: dgu-nav
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=optional
+    startCommand: node server.js
+    envVars:
+      - key: DEVICE_KEY
+        sync: false        # 처음 만들 때 Render가 값을 물어봐요 (원하는 비밀 키 입력)
