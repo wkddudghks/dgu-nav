@@ -32,6 +32,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 app.use(express.json());
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'room.html')));   // 첫 화면 = 방 위치 측정 (신공학관 지도는 /index.html)
 app.use(express.static(path.join(__dirname, 'public')));
 
 const history = {};   // station -> 최근 RSSI
