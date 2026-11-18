@@ -8,6 +8,7 @@
   :root { --bg:#15171d; --panel:#1f222b; --line:#2b2f3a; --text:#dde1ea; --muted:#8a92a3;
           --accent:#ff4d5a; --cyan:#4dd0e1; --ok:#5fd38d; --floor:#1b1e26; --grid:#262a34; --grid2:#30354200; }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; padding:16px; }
   .wrap { max-width: 1200px; margin: 0 auto; display:grid; gap:14px; }
   h1 { font-size:18px; margin:0; border-left:4px solid var(--accent); padding-left:8px; }
@@ -36,7 +37,7 @@
 <div class="wrap">
   <div>
     <h1>방 위치 측정</h1>
-    <p class="lead">스테이션(S1~S4)을 끌어서 실제로 놓은 자리에 맞추세요. 10cm 단위로 저장돼요.
+    <p class="lead">스테이션(S1~S13)을 끌어서 실제로 놓은 자리에 맞추거나, <b>자동 배치</b>로 스테이션끼리 잰 신호로 위치를 정하세요. 10cm 단위로 저장돼요.
       빈 곳을 누르면 그 자리가 <b style="color:var(--ok)">실제 위치(초록 +)</b>로 찍히고, "오차 기록"을 누르면 추정 위치와 비교해요.</p>
   </div>
 
@@ -47,12 +48,17 @@
           <label for="w">가로(m)</label><input id="w" type="number" step="0.1" min="0.5" max="50">
           <label for="h">세로(m)</label><input id="h" type="number" step="0.1" min="0.5" max="50">
         </div>
-        <div class="row"><label><input type="checkbox" id="circles" checked> 거리 원 보기</label></div>
+        <div class="row"><label><input type="checkbox" id="circles" checked> 거리 원 보기</label>
+          <label><input type="checkbox" id="links"> 스테이션끼리 신호 보기</label></div>
       </div>
+      <div class="row" id="keyRow" hidden style="background:#3a2430;border:1px solid var(--accent);border-radius:8px;padding:8px 10px;margin-bottom:10px">
+        <label for="key" style="color:var(--text)">🔑 관리 키</label>
+        <input id="key" type="password" placeholder="Render의 DEVICE_KEY" style="width:180px;background:#2a2e3a;color:var(--text);border:0;border-radius:6px;padding:6px 8px">
+        <button type="button" id="keySave">저장</button>
+        <span class="muted">스테이션 위치를 바꾸려면 필요해요 (보기만 할 땐 필요 없음)</span></div>
       <canvas id="c"></canvas>
       <div id="msg"></div>
-      <div class="row" id="keyRow" hidden><label for="key">관리 키</label><input id="key" type="password" style="width:160px;background:#2a2e3a;color:var(--text);border:0;border-radius:6px;padding:6px 8px">
-        <button type="button" id="keySave" class="ghost">저장</button></div>
+
     </section>
 
     <div class="side">
@@ -60,6 +66,25 @@
         <h2>폰 추정 위치</h2>
         <div class="big" id="est">신호 없음</div>
         <div class="muted" id="estSub"></div>
+      </section>
+
+      <section>
+        <h2>자동 배치 <span class="muted" id="peerInfo"></span></h2>
+        <div class="row" style="margin-bottom:8px">
+          <button id="autoOnce" type="button">지금 자동 배치</button>
+          <label><input type="checkbox" id="autoOn"> 10초마다</label>
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <button id="rot" type="button" class="ghost">90° 회전</button>
+          <button id="flip" type="button" class="ghost">좌우 뒤집기</button>
+        </div>
+        <div class="row" style="margin-bottom:6px">
+          <label>기준 거리</label>
+          <select id="refA"></select><span class="muted">–</span><select id="refB"></select>
+          <input id="refD" type="number" step="0.1" min="0.3" placeholder="m" style="width:60px">
+          <button id="refGo" type="button" class="ghost">적용</button>
+        </div>
+        <div class="muted" id="autoMsg">스테이션끼리 신호가 모이면(약 20초) 자동 배치를 누르세요. 멀리 떨어진 두 스테이션 사이를 줄자로 재서 넣으면 전체 크기가 맞춰져요.</div>
       </section>
 
       <section>
@@ -88,15 +113,26 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
-const IDS = ['STATION_01', 'STATION_02', 'STATION_03', 'STATION_04'];
-const COLORS = ['#4dd0e1', '#f5c15b', '#b58cff', '#5fd38d'];
+const BASE_N = 13;   // 항상 보이는 스테이션 수 (S1 ~ S13)
+let IDS = Array.from({ length: BASE_N }, (_, i) => `STATION_${String(i + 1).padStart(2, '0')}`);
+const num = id => parseInt(id.slice(8), 10);
+const lab = id => 'S' + num(id);
+const colorOf = (id, a = 1) => `hsla(${(num(id) - 1) * 360 / BASE_N * 0.97 + 185}, 70%, 62%, ${a})`;
+let peers = { links: [], last: null, auto: false, tx: -59 };
 const c = document.getElementById('c'), ctx = c.getContext('2d');
 const $ = id => document.getElementById(id);
 const r1 = v => Math.round(v * 10) / 10;
 
 let room = { width: 5, height: 4, stations: {} };
 let live = { estimate: null, parts: [] };
+function updateIds() {   // 서버에 위치가 있거나 신호가 들어온 스테이션까지 포함
+  const set = new Set(IDS);
+  Object.keys(room.stations || {}).forEach(id => set.add(id));
+  live.parts.forEach(p => set.add(p.id));
+  IDS = [...set].sort((a, b) => num(a) - num(b));
+}
 let drag = null;           // 끌고 있는 스테이션 ID
+let pending = false;       // 저장 못 한 변경이 있음 (키 입력 대기)
 let actual = null;         // 실제 위치 {x,y}
 const log = [];
 
@@ -142,11 +178,18 @@ function draw() {
   ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
   for (let y = 0; y <= H + 1e-9; y += 1) ctx.fillText(y + 'm', OX - 6, OY + y * S);
 
+  // 스테이션끼리 신호 (선이 진할수록 가까움)
+  if ($('links').checked) for (const l of peers.links) {
+    const A = room.stations[l.a], B = room.stations[l.b]; if (!A || !B) continue;
+    const [a1, b1] = px(A.x, A.y), [a2, b2] = px(B.x, B.y);
+    ctx.strokeStyle = `rgba(160,170,190,${Math.min(0.7, Math.max(0.08, 1.2 / l.d))})`; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(a1, b1); ctx.lineTo(a2, b2); ctx.stroke();
+  }
   // 거리 원
   if ($('circles').checked) for (const p of live.parts) {
     const s = room.stations[p.id]; if (!s) continue;
     const [a, b] = px(s.x, s.y);
-    ctx.strokeStyle = COLORS[IDS.indexOf(p.id)] + '66'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]);
+    ctx.strokeStyle = colorOf(p.id, 0.4); ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]);
     ctx.beginPath(); ctx.arc(a, b, p.d * S, 0, 7); ctx.stroke(); ctx.setLineDash([]);
   }
   // 실제 위치
@@ -168,15 +211,16 @@ function draw() {
     ctx.beginPath(); ctx.arc(a, b, 8, 0, 7); ctx.fill(); ctx.stroke();
   }
   // 스테이션
-  IDS.forEach((id, i) => {
+  IDS.forEach(id => {
     const s = room.stations[id]; if (!s) return;
     const [a, b] = px(s.x, s.y);
     const on = live.parts.some(p => p.id === id);
-    ctx.fillStyle = on ? COLORS[i] : '#4a5060';
+    ctx.fillStyle = on ? colorOf(id) : '#4a5060';
     ctx.strokeStyle = drag === id ? '#fff' : '#15171d'; ctx.lineWidth = drag === id ? 3 : 2;
     ctx.beginPath(); ctx.roundRect ? ctx.roundRect(a - 13, b - 13, 26, 26, 6) : ctx.rect(a - 13, b - 13, 26, 26); ctx.fill(); ctx.stroke();
     ctx.fillStyle = '#15171d'; ctx.font = '700 12px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('S' + (i + 1), a, b + 1);
+    ctx.fillStyle = on ? '#15171d' : '#c9cfdb';
+    ctx.fillText(lab(id), a, b + 1);
     if (drag === id) {
       const t = `(${s.x.toFixed(1)}, ${s.y.toFixed(1)})`;
       ctx.font = '600 13px system-ui'; const w = ctx.measureText(t).width + 12;
@@ -191,14 +235,16 @@ function renderSide() {
   $('est').textContent = e ? `(${e.x.toFixed(2)}, ${e.y.toFixed(2)}) m` : '신호 없음';
   $('estSub').textContent = e ? `신호 받은 스테이션 ${live.parts.length}개${live.parts.length < 3 ? ' · 3개 이상이면 더 정확해요' : ''}` : '비콘 앱과 ESP32를 확인하세요';
   const tb = $('st');
-  if (tb.children.length !== 4) {
-    tb.innerHTML = IDS.map((id, i) => `<tr>
-      <td><b style="color:${COLORS[i]}">S${i + 1}</b></td>
+  if (tb.dataset.ids !== IDS.join()) {
+    tb.dataset.ids = IDS.join();
+    tb.innerHTML = IDS.map(id => `<tr>
+      <td><b style="color:${colorOf(id)}">${lab(id)}</b></td>
       <td><input type="number" step="0.1" min="0" data-id="${id}" data-k="x"></td>
       <td><input type="number" step="0.1" min="0" data-id="${id}" data-k="y"></td>
       <td class="sig" data-id="${id}"></td></tr>`).join('');
     tb.querySelectorAll('input').forEach(inp => inp.onchange = () => {
-      const s = room.stations[inp.dataset.id]; s[inp.dataset.k] = r1(+inp.value || 0); save();
+      const s = room.stations[inp.dataset.id] || (room.stations[inp.dataset.id] = { x: 0, y: 0 });
+      s[inp.dataset.k] = r1(+inp.value || 0); save();
     });
   }
   tb.querySelectorAll('input').forEach(inp => {
@@ -210,21 +256,79 @@ function renderSide() {
   });
   if (document.activeElement !== $('w')) $('w').value = room.width.toFixed(1);
   if (document.activeElement !== $('h')) $('h').value = room.height.toFixed(1);
+  renderPeers();
   $('actualTxt').textContent = actual ? `실제 위치: (${actual.x.toFixed(1)}, ${actual.y.toFixed(1)}) m` : '실제 위치: 지도 빈 곳을 누르세요';
 }
 
-function render() { draw(); renderSide(); }
+function renderPeers() {
+  const nLinks = peers.links.length;
+  const ids = new Set(peers.links.flatMap(l => [l.a, l.b]));
+  $('peerInfo').textContent = `· 스테이션 ${ids.size}개, 쌍 ${nLinks}개 측정 중`;
+  if (document.activeElement !== $('autoOn')) $('autoOn').checked = !!peers.auto;
+  for (const sel of [$('refA'), $('refB')]) {
+    if (sel.dataset.ids !== IDS.join()) {
+      const v = sel.value; sel.dataset.ids = IDS.join();
+      sel.innerHTML = IDS.map(id => `<option value="${id}">${lab(id)}</option>`).join('');
+      sel.value = v || (sel === $('refB') ? IDS[1] : IDS[0]);
+    }
+  }
+}
+function showLayout(r) {
+  if (!r) return;
+  const warn = r.warnings?.length ? ' · ' + r.warnings.slice(0, 3).join(' / ') : '';
+  const ref = r.ref ? ` · 기준 ${lab(r.ref.a)}–${lab(r.ref.b)} ${r.ref.d}m (크기 ×${r.scale})` : ' · 기준 거리 없음(크기는 신호 세기로만 추정)';
+  $('autoMsg').textContent = `${new Date(r.at).toLocaleTimeString()} 배치: 스테이션 ${r.stations}개, 쌍 ${r.pairs}개, 거리 잔차 ${r.rms}m${ref}${warn}`;
+}
+
+function render() { updateIds(); draw(); renderSide(); }
+
+function keyHeader() { let key = ''; try { key = localStorage.getItem('dgu-key') || ''; } catch (e) {} return key; }
+async function auto(body) {
+  try {
+    const res = await fetch('/room/auto', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Device-Key': keyHeader() }, body: JSON.stringify(body) });
+    if (res.status === 401 || res.status === 403) { $('keyRow').hidden = false; $('autoMsg').textContent = '자동 배치를 하려면 관리 키가 필요해요.'; return; }
+    const d = await res.json();
+    if (d.error) { $('autoMsg').textContent = d.error; return; }
+    if (d.room) room = { width: d.room.width, height: d.room.height, stations: d.room.stations };
+    peers.auto = d.auto; peers.tx = d.tx;
+    if (d.at) showLayout(d); else $('autoMsg').textContent = d.auto ? '10초마다 자동 배치해요.' : '자동 갱신을 껐어요.';
+  } catch (e) { $('autoMsg').textContent = '서버에 연결할 수 없어요.'; }
+  render();
+}
+$('autoOnce').onclick = () => auto({ mode: 'once' });
+$('autoOn').onchange = () => auto({ mode: $('autoOn').checked ? 'on' : 'off' });
+$('refGo').onclick = () => {
+  const a = $('refA').value, b = $('refB').value, d = +$('refD').value;
+  if (a === b || !(d > 0.2)) { $('autoMsg').textContent = '서로 다른 두 스테이션과 거리(m)를 넣어 주세요.'; return; }
+  auto({ mode: 'once', ref: { a, b, d } });
+};
+// 신호로는 방향을 알 수 없으므로 실제 방에 맞게 돌리거나 뒤집기
+function transform(f) {
+  const ids = Object.keys(room.stations); if (!ids.length) return;
+  const P = ids.map(id => f(room.stations[id]));
+  const minX = Math.min(...P.map(p => p.x)), minY = Math.min(...P.map(p => p.y));
+  const maxX = Math.max(...P.map(p => p.x)), maxY = Math.max(...P.map(p => p.y));
+  const m = 0.5, W = Math.max(room.width, maxX - minX + 2 * m), H = Math.max(room.height, maxY - minY + 2 * m);
+  ids.forEach((id, i) => room.stations[id] = { x: r1(P[i].x - minX + m), y: r1(P[i].y - minY + m) });
+  room.width = r1(Math.ceil(Math.max(W, maxX - minX + 2 * m) * 10) / 10); room.height = r1(Math.ceil(Math.max(H, maxY - minY + 2 * m) * 10) / 10);
+  save();
+}
+$('rot').onclick = () => transform(s => ({ x: -s.y, y: s.x }));
+$('flip').onclick = () => transform(s => ({ x: -s.x, y: s.y }));
+$('links').onchange = draw;
 
 async function save() {
   try {
     let key = ''; try { key = localStorage.getItem('dgu-key') || ''; } catch (e) {}
     const res = await fetch('/room', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Device-Key': key }, body: JSON.stringify(room) });
     if (res.status === 403) { $('msg').textContent = '인터넷 공유 링크에서는 위치를 바꿀 수 없어요. 노트북에서 바꿔 주세요.'; return; }
-    if (res.status === 401) { $('keyRow').hidden = false; $('msg').textContent = '관리 키가 필요해요. 아래에 DEVICE_KEY를 입력하고 다시 옮겨 보세요.'; return; }
+    if (res.status === 401) { pending = true; $('keyRow').hidden = false; $('key').focus();
+      $('msg').textContent = key ? '관리 키가 틀렸어요. 위 칸에 다시 입력하고 저장을 누르세요.' : '위치를 저장하려면 위 칸에 관리 키를 입력하고 저장을 누르세요.'; return; }
     if (!res.ok) { $('msg').textContent = '저장하지 못했어요 (' + res.status + ')'; return; }
     const d = await res.json();
     room = { width: d.width, height: d.height, stations: d.stations };
-    $('msg').textContent = '';
+    pending = false; $('keyRow').hidden = true;
+    $('msg').textContent = '저장했어요.'; setTimeout(() => { if ($('msg').textContent === '저장했어요.') $('msg').textContent = ''; }, 1500);
   } catch (e) { $('msg').textContent = '서버에 연결할 수 없어요.'; }
   render();
 }
@@ -276,6 +380,10 @@ $('rec').onclick = () => {
 $('clear').onclick = () => { log.length = 0; renderLog(); };
 
 // ---- 서버 연결 ----
+fetch('/health').then(r => r.json()).then(h => {
+  let k = ''; try { k = localStorage.getItem('dgu-key') || ''; } catch (e) {}
+  if (h.keyRequired && !k) $('keyRow').hidden = false;
+}).catch(() => {});
 fetch('/room').then(r => r.json()).then(d => {
   room = { width: d.width, height: d.height, stations: d.stations };
   live = { estimate: d.estimate, parts: d.parts || [] };
@@ -284,9 +392,11 @@ fetch('/room').then(r => r.json()).then(d => {
 if (typeof io !== 'undefined') io().on('update', d => {
   if (!d.room) return;
   live = { estimate: d.room.estimate, parts: d.room.parts || [] };
-  if (!drag) room = { width: d.room.width, height: d.room.height, stations: d.room.stations };
+  if (!drag && !pending) room = { width: d.room.width, height: d.room.height, stations: d.room.stations };
+  if (d.peers) { const prevAt = peers.last?.at; peers = d.peers; if (d.peers.last && d.peers.last.at !== prevAt) showLayout(d.peers.last); }
   render();
 });
+fetch('/peers').then(r => r.json()).then(p => { peers = p; if (p.last) showLayout(p.last); render(); }).catch(() => {});
 render();
 </script>
 </body>
