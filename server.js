@@ -24,6 +24,9 @@ const WINDOW = 5;       // 이동평균에 쓸 최근 측정 개수
 const STALE_MS = 4000;  // 이 시간 동안 안 들어온 스테이션은 무시
 const SWITCH_DB = 4;    // 위치를 바꾸려면 몇 dB 더 세야 하는지
 const MIN_RSSI = -90;   // 이보다 약하면 "근처 아님"으로 봄
+const MAX_STATIONS = 20; // STATION_01 ~ STATION_20 까지 받음
+const isStationId = id => typeof id === 'string' && /^STATION_\d{2}$/.test(id) && +id.slice(8) >= 1 && +id.slice(8) <= MAX_STATIONS;
+const { solveLayout, median, label } = require('./selfloc');
 
 const map = JSON.parse(fs.readFileSync(path.join(__dirname, 'public', 'map.json'), 'utf8'));
 const nodeById = Object.fromEntries(map.nodes.map(n => [n.id, n]));
@@ -42,7 +45,7 @@ let current = null;   // 현재 판단된 스테이션 ID
 function snapshot() {
   const now = Date.now();
   const status = {};
-  for (const id of Object.keys(map.stations)) {
+  for (const id of new Set([...Object.keys(map.stations), ...Object.keys(room.stations), ...Object.keys(lastSeen)])) {
     const fresh = lastSeen[id] && now - lastSeen[id] < STALE_MS;
     status[id] = fresh ? Math.round(history[id].reduce((a, b) => a + b, 0) / history[id].length) : null;
   }
@@ -50,7 +53,7 @@ function snapshot() {
 }
 
 function decide(status) {
-  const alive = Object.entries(status).filter(([, r]) => r !== null && r > MIN_RSSI);
+  const alive = Object.entries(status).filter(([id, r]) => map.stations[id] && r !== null && r > MIN_RSSI);   // 층 지도에 등록된 스테이션만
   if (!alive.length) { current = null; return; }
   alive.sort((a, b) => b[1] - a[1]);
   const [bestId, bestRssi] = alive[0];
@@ -95,6 +98,28 @@ let room = {
 };
 try { room = JSON.parse(fs.readFileSync(ROOM_FILE, 'utf8')); } catch (e) {}
 const r1 = v => Math.round(v * 10) / 10;   // 10cm 단위로 맞추기
+// 방 화면에 항상 보일 스테이션 수 (S1 ~ S13). 위치가 없는 스테이션은 빈 자리에 고르게 놓음
+const ROOM_STATIONS = 13;
+function fillRoomStations() {
+  const ids = Array.from({ length: ROOM_STATIONS }, (_, i) => `STATION_${String(i + 1).padStart(2, '0')}`);
+  const missing = ids.filter(id => !room.stations[id]);
+  if (!missing.length) return;
+  // 이미 놓인 스테이션들과 가장 멀리 떨어진 빈 자리를 하나씩 골라 채움 (겹치지 않게 고르게 퍼짐)
+  const W = room.width, H = room.height, m = Math.min(0.5, W / 4, H / 4);
+  const placed = Object.values(room.stations).map(p => [p.x, p.y]);
+  const cand = [];
+  for (let x = m; x <= W - m + 1e-9; x += 0.1) for (let y = m; y <= H - m + 1e-9; y += 0.1) cand.push([r1(x), r1(y)]);
+  for (const id of missing) {
+    let best = cand[0], bd = -1;
+    for (const c of cand) {
+      const d = placed.length ? Math.min(...placed.map(p => Math.hypot(p[0] - c[0], p[1] - c[1]))) : 0;
+      if (d > bd) { bd = d; best = c; }
+    }
+    placed.push(best);
+    room.stations[id] = { x: best[0], y: best[1] };
+  }
+}
+fillRoomStations();
 let roomSmooth = null;
 
 function estimateRoom(status) {
@@ -122,6 +147,39 @@ function estimateRoom(status) {
 }
 
 let lastRoom = { estimate: null, parts: [] };
+// ===== 로봇카 실험 기록 =====
+// ESP32(car_brain.ino)가 주행이 끝날 때마다 한 줄씩 보냄
+//  "시행,목적지키,경로,결과,모드,t=63.2,ep=3,blk=12.4,minf=7,touch=1,esc=0"
+const CARLOG_FILE = path.join(__dirname, 'carlog.json');
+let carlog = [];
+try { carlog = JSON.parse(fs.readFileSync(CARLOG_FILE, 'utf8')); } catch (e) {}
+function parseCarLine(line) {
+  const p = String(line).split(',');
+  const kv = Object.fromEntries(p.slice(5).map(s => s.split('=')).filter(x => x.length === 2).map(([k, v]) => [k, +v]));
+  return { at: new Date().toISOString(), trial: +p[0], dest: p[1], route: p[2], result: p[3], mode: p[4],
+           time: kv.t, episodes: kv.ep, blocked: kv.blk, minFront: kv.minf, touches: kv.touch, escapes: kv.esc };
+}
+app.post('/carlog', canWrite, (req, res) => {
+  const line = req.body?.line;
+  if (!line || String(line).length > 200) return res.sendStatus(400);
+  const row = parseCarLine(line);
+  carlog.push(row);
+  try { fs.writeFileSync(CARLOG_FILE, JSON.stringify(carlog, null, 1)); } catch (e) {}
+  console.log('[로봇 기록]', row.mode, row.result, row.time + '초', '장애물', row.episodes);
+  io.emit('carlog', row);
+  res.json(row);
+});
+app.get('/carlog.json', (req, res) => res.json(carlog));
+app.get('/carlog.csv', (req, res) => {
+  const head = 'at,trial,dest,route,result,mode,time_s,episodes,blocked_s,min_front_cm,touches,escapes';
+  const rows = carlog.map(r => [r.at, r.trial, r.dest, r.route, r.result, r.mode, r.time, r.episodes, r.blocked, r.minFront, r.touches, r.escapes].join(','));
+  res.type('text/csv').send('﻿' + [head, ...rows].join('\n'));
+});
+app.post('/carlog/clear', canWrite, (req, res) => {
+  carlog = []; try { fs.writeFileSync(CARLOG_FILE, '[]'); } catch (e) {}
+  io.emit('carlog', null); res.json({ ok: true });
+});
+
 app.get('/health', (req, res) => res.json({ ok: true, keyRequired: !!DEVICE_KEY, stations: Object.fromEntries(Object.keys(lastSeen).map(id => [id, Math.round((Date.now() - lastSeen[id]) / 1000) + 's 전'])) }));
 app.get('/room', (req, res) => res.json({ ...room, ...lastRoom }));
 app.post('/room', canWrite, (req, res) => {
@@ -129,19 +187,99 @@ app.post('/room', canWrite, (req, res) => {
   const w = +b.width, h = +b.height;
   if (!(w >= 0.5 && w <= 50 && h >= 0.5 && h <= 50) || !b.stations) return res.sendStatus(400);
   const stations = {};
-  for (const id of ['STATION_01', 'STATION_02', 'STATION_03', 'STATION_04']) {
-    const s = b.stations[id];
+  for (const [id, s] of Object.entries(b.stations)) {
+    if (!isStationId(id)) return res.sendStatus(400);
     if (!s || !Number.isFinite(+s.x) || !Number.isFinite(+s.y)) return res.sendStatus(400);
     stations[id] = { x: r1(Math.min(Math.max(+s.x, 0), w)), y: r1(Math.min(Math.max(+s.y, 0), h)) };
   }
   room = { width: r1(w), height: r1(h), stations };
   try { fs.writeFileSync(ROOM_FILE, JSON.stringify(room, null, 1)); } catch (e) {}
   console.log(`[방] ${room.width}m x ${room.height}m  ` +
-    Object.entries(stations).map(([id, s]) => `S${id.slice(-1)}(${s.x}, ${s.y})`).join(' '));
+    Object.entries(stations).map(([id, s]) => `${label(id)}(${s.x}, ${s.y})`).join(' '));
   roomSmooth = null;
   broadcast();
   res.json({ ...room, ...lastRoom });
 });
+
+// ===== 스테이션 위치 자동 추정 =====
+// 스테이션마다 자기 비콘(Major 7777, Minor = 번호)을 내보내고, 다른 스테이션 신호 세기를 재서 /peers로 보냄
+// 서버는 쌍마다 최근 값의 중앙값 → 거리 → selfloc.js로 2D 배치를 계산해 방 화면의 스테이션 위치로 씀
+const PEER_FILE = path.join(__dirname, 'peers.json');
+const PEER_WINDOW = 30;        // 쌍마다 최근 몇 개를 쓸지
+const PEER_STALE_MS = 60000;   // 1분 넘게 안 들어온 쌍은 버림
+const PEER_MIN_SAMPLES = 5;    // 이만큼 모여야 그 쌍을 씀
+const PEER_MIN_RSSI = -92;
+let peerCfg = { tx: -59, n: 2.5, auto: false, ref: null };   // tx: 스테이션끼리 1m에서의 RSSI, ref: 줄자로 잰 기준 거리 {a, b, d}
+try { peerCfg = { ...peerCfg, ...JSON.parse(fs.readFileSync(PEER_FILE, 'utf8')) }; } catch (e) {}
+const savePeerCfg = () => { try { fs.writeFileSync(PEER_FILE, JSON.stringify(peerCfg, null, 1)); } catch (e) {} };
+const peerRaw = {};            // "STATION_01|STATION_02" (작은 번호 먼저) -> { s: [rssi...], t }
+let lastLayout = null;
+const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
+function peerLinks() {
+  const now = Date.now(), out = [];
+  for (const [k, v] of Object.entries(peerRaw)) {
+    if (now - v.t > PEER_STALE_MS || v.s.length < PEER_MIN_SAMPLES) continue;
+    const rssi = median(v.s);
+    if (rssi < PEER_MIN_RSSI) continue;
+    const [a, b] = k.split('|');
+    out.push({ a, b, rssi: Math.round(rssi), n: v.s.length, d: +rssiToDistPeer(rssi).toFixed(2) });
+  }
+  return out;
+}
+const rssiToDistPeer = r => Math.pow(10, (peerCfg.tx - r) / (10 * peerCfg.n));
+function peerSummary() {
+  const links = peerLinks();
+  return { links, tx: peerCfg.tx, n: peerCfg.n, auto: peerCfg.auto, ref: peerCfg.ref, last: lastLayout };
+}
+
+app.post('/peers', canWrite, (req, res) => {
+  const { station, peers } = req.body || {};
+  if (!isStationId(station) || !peers || typeof peers !== 'object') return res.sendStatus(400);
+  const now = Date.now();
+  for (const [k, r] of Object.entries(peers)) {
+    const other = /^\d+$/.test(k) ? `STATION_${String(+k).padStart(2, '0')}` : k;   // "3" 또는 "STATION_03"
+    if (!isStationId(other) || other === station || typeof r !== 'number' || r > 0 || r < -110) continue;
+    const key = pairKey(station, other);
+    const v = peerRaw[key] || (peerRaw[key] = { s: [], t: 0 });
+    v.s.push(r); if (v.s.length > PEER_WINDOW) v.s.shift(); v.t = now;   // A가 들은 값과 B가 들은 값을 함께 모음
+  }
+  res.json({ ok: true });
+});
+app.get('/peers', (req, res) => res.json(peerSummary()));
+
+// 자동 배치 계산 → 방 화면 스테이션 위치로 적용
+function autoLayout() {
+  const links = peerLinks();
+  const ids = [...new Set(links.flatMap(l => [l.a, l.b]))].sort();
+  if (ids.length < 3) return { error: `스테이션끼리 잰 신호가 부족해요 (연결된 스테이션 ${ids.length}개, 3개 이상 필요)` };
+  const r = solveLayout(ids, links, { tx: peerCfg.tx, n: peerCfg.n, prev: room.stations, ref: peerCfg.ref });
+  room = { width: r.width, height: r.height, stations: r.positions };
+  fillRoomStations();   // 신호가 안 잡힌 스테이션은 빈 자리에
+  try { fs.writeFileSync(ROOM_FILE, JSON.stringify(room, null, 1)); } catch (e) {}
+  roomSmooth = null;
+  lastLayout = { at: new Date().toISOString(), stations: ids.length, pairs: r.pairs, rms: r.rms, scale: r.scale, ref: peerCfg.ref, perStation: r.perStation, warnings: r.warnings };
+  console.log(`[자동 배치] 스테이션 ${ids.length}개, 쌍 ${r.pairs}개, 거리 잔차 ${r.rms}m` + (r.warnings.length ? ' · ' + r.warnings.join(' / ') : ''));
+  return { ok: true, ...lastLayout };
+}
+// body: { mode: 'once' | 'on' | 'off', ref: { a, b, d } | 'clear' }
+//  ref = 두 스테이션 사이를 줄자로 잰 거리(m) → 배치 전체 크기를 그 거리에 맞춤 (저장돼서 다음 배치에도 쓰임)
+app.post('/room/auto', canWrite, (req, res) => {
+  const b = req.body || {};
+  if (b.ref === 'clear') { peerCfg.ref = null; savePeerCfg(); }
+  else if (b.ref) {
+    const { a, b: bb, d } = b.ref;
+    if (!isStationId(a) || !isStationId(bb) || a === bb || !(+d > 0.2 && +d < 50)) return res.status(400).json({ error: '기준 거리 값이 잘못됐어요' });
+    peerCfg.ref = { a, b: bb, d: +d };
+    savePeerCfg();
+    console.log(`[자동 배치] 기준 거리 ${label(a)}–${label(bb)} = ${d}m`);
+  }
+  if (b.mode === 'on' || b.mode === 'off') { peerCfg.auto = b.mode === 'on'; savePeerCfg(); }
+  const out = b.mode === 'off' ? { ok: true } : autoLayout();
+  broadcast();
+  res.status(out.error ? 409 : 200).json({ ...out, auto: peerCfg.auto, tx: peerCfg.tx, room });
+});
+setInterval(() => { if (peerCfg.auto) { const r = autoLayout(); if (!r.error) broadcast(); } }, 10000);
 
 let lastCorridor = { estimate: null, parts: [] };
 function broadcast() {
@@ -158,6 +296,7 @@ function broadcast() {
     floor: nodeId ? nodeById[nodeId].floor : null,
     corridor: { positions: corridor.positions, ...lastCorridor },
     room: { ...room, ...lastRoom },
+    peers: peerSummary(),
   });
 }
 
@@ -180,10 +319,10 @@ app.post('/corridor', canWrite, (req, res) => {
 
 app.post('/rssi', canWrite, (req, res) => {
   const { station, rssi } = req.body || {};
-  if (!map.stations[station] || typeof rssi !== 'number') return res.sendStatus(400);
+  if (!isStationId(station) || typeof rssi !== 'number') return res.sendStatus(400);
   history[station] = (history[station] || []).concat(rssi).slice(-WINDOW);
   lastSeen[station] = Date.now();
-  console.log(`[수신] ${station} (${map.stations[station]}): ${rssi}dBm (약 ${rssiToMeters(rssi).toFixed(1)}m)`);
+  console.log(`[수신] ${station} (${map.stations[station] || '방'}): ${rssi}dBm (약 ${rssiToMeters(rssi).toFixed(1)}m)`);
   broadcast();
   // LCD 스테이션용 응답: 이 스테이션이 지금 가장 가까운지 알려줌 (기존 ESP32 코드는 무시해도 됨)
   const bestNode = current ? map.stations[current] : null;
@@ -222,5 +361,5 @@ udp.bind(() => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`서버 실행: http://localhost:${PORT}`);
   for (const a of lanAddrs()) console.log(`  폰/다른 기기에서: http://${a.address}:${PORT}`);
-  console.log(`등록된 스테이션: ${Object.keys(map.stations).length}개, 층: ${map.floors.map(f => f.id + 'F').join(', ')}`);
+  console.log(`층 지도 스테이션: ${Object.keys(map.stations).length}개, 층: ${map.floors.map(f => f.id + 'F').join(', ')} · 방 화면은 STATION_01~${MAX_STATIONS} 모두 받음`);
 });
