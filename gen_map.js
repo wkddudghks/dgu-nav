@@ -7,16 +7,32 @@ const path = require('path');
 
 const FLOORS = process.argv.slice(2).map(Number).filter(Boolean);
 if (!FLOORS.length) FLOORS.push(5, 6);
-const PX_PER_M = 18;
+// 축척: 7층에서 타일(53cm 정사각형)을 세어 구함 (11월 19일)
+//  - 7136 옆 세로 복도 106칸 = 56.2m  → 이 지도에서 약 15.6px/m
+//  - 7101 동쪽 벽 ~ 7136 서쪽 벽 13칸 = 6.9m → 약 15.8px/m
+//  두 방향이 1% 안으로 맞아서 하나의 값으로 씀 (이전 어림값 18 → 실제 거리는 약 15% 더 김)
+const PX_PER_M = 15.7;
 const STAIR_COST = 12; // 한 층 오르내리는 비용(m 환산)
 const EV_COST = 10;
 
-// ESP32를 놓을 복도 지점 (층마다 같은 자리) — 보드 수에 맞게 늘리거나 줄이세요
+// ESP32(스테이션)를 놓을 자리 — 6층, 길잡이 로봇 키패드 목적지 앞 복도 벽 (STATION_01 ~ 13)
+//  D_xxx = 그 방 출입구 앞 복도 지점. 복도 맞은편으로 1~3m 안에 붙은 목적지는 비콘 하나를 같이 씀
+//  (RSSI로는 3m 안의 두 비콘을 구별하기 어려움) → 남는 3개는 가운데 복도·복도 끝·갈림길에 둠
+const STATION_FLOOR = 6;
 const STATION_SPOTS = [
-  ['W_M',  '서쪽 복도 (x107~x109 앞)'],
-  ['B_EV', '중앙 엘리베이터 앞'],
-  ['T_E',  '북동 엘리베이터 앞'],
-  ['W2_S', '2구역 입구'],
+  ['D_103',        '6103 앞 (키 1)'],
+  ['D_105',        '6105 · 중앙계단 앞 (키 2, D)'],
+  ['D_107',        '6107 · 남자화장실 앞 (키 3, A)'],
+  ['D_109',        '6109 · 여자화장실 앞 (키 4, B)'],
+  ['D_112',        '6112 앞 (키 5)'],
+  ['D_113',        '6113 앞 (키 6)'],
+  ['D_119',        '6119 · 6122 앞 (키 7, 8)'],
+  ['D_127',        '6127 앞 (키 9)'],
+  ['D_141',        '6141 앞 (키 0)'],
+  ['D_중앙엘리베이터', '중앙 엘리베이터 앞 (키 C)'],
+  ['D_130',        '6130 앞 (가운데 세로 복도)'],
+  ['T_E',          '북동 엘리베이터 앞 (북쪽 복도 끝)'],
+  ['B_E',          '남쪽 복도 남동계단 갈림길'],
 ];
 
 // 6층 안내도에 적힌 실 이름 (다른 층은 번호만 표시)
@@ -158,13 +174,15 @@ for (const list of Object.values(vlinks)) {
     map.edges.push([list[i - 1].id, list[i].id, list[i].cost * (list[i].f - list[i - 1].f)]);
 }
 
-// 스테이션 배치
+// 스테이션 배치 (STATION_FLOOR 층에만)
 let no = 1;
-for (const f of FLOORS)
+if (FLOORS.includes(STATION_FLOOR))
   for (const [k, note] of STATION_SPOTS) {
     const sid = `STATION_${String(no++).padStart(2, '0')}`;
-    map.stations[sid] = `${f}F_${k}`;
-    map.stationNotes[sid] = `${f}층 ${note}`;
+    const node = `${STATION_FLOOR}F_${k}`;
+    if (!map.nodes.some(n => n.id === node)) throw new Error(`스테이션 자리 ${node}가 지도에 없음`);
+    map.stations[sid] = node;
+    map.stationNotes[sid] = `${STATION_FLOOR}층 ${note}`;
   }
 
 map.destinations.sort((a, b) => a.floor - b.floor || a.room.localeCompare(b.room, 'ko', { numeric: true }));

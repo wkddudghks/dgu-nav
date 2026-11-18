@@ -27,6 +27,7 @@ const MIN_RSSI = -90;   // 이보다 약하면 "근처 아님"으로 봄
 const MAX_STATIONS = 20; // STATION_01 ~ STATION_20 까지 받음
 const isStationId = id => typeof id === 'string' && /^STATION_\d{2}$/.test(id) && +id.slice(8) >= 1 && +id.slice(8) <= MAX_STATIONS;
 const { solveLayout, median, label } = require('./selfloc');
+const { planRoute } = require('./carroute');
 
 const map = JSON.parse(fs.readFileSync(path.join(__dirname, 'public', 'map.json'), 'utf8'));
 const nodeById = Object.fromEntries(map.nodes.map(n => [n.id, n]));
@@ -281,6 +282,50 @@ app.post('/room/auto', canWrite, (req, res) => {
 });
 setInterval(() => { if (peerCfg.auto) { const r = autoLayout(); if (!r.error) broadcast(); } }, 10000);
 
+// ===== 길잡이 로봇 (차 위 ESP32 = STATION_A) =====
+// 차가 벽 스테이션 13개의 비콘(Major 7777)을 듣고 번호별 RSSI를 보냄 → 가장 센 스테이션 자리 = 차 위치
+// 키패드로 목적지·차 방향을 고르면 /car/route가 지도 최단 경로를 우노 명령(carroute.js)으로 바꿔 줌
+const CAR_STALE_MS = 15000;
+let car = null;   // { id, near, node, rssi, heading, state, dest, at, route }
+function carNearest(rssi) {
+  let best = null;
+  for (const [k, r] of Object.entries(rssi || {})) {
+    const sid = /^\d+$/.test(k) ? `STATION_${String(+k).padStart(2, '0')}` : k;
+    if (!map.stations[sid] || typeof r !== 'number' || r < -95) continue;
+    if (!best || r > best.r) best = { sid, r };
+  }
+  return best;
+}
+function carUpdate(b) {
+  const near = carNearest(b.rssi);
+  car = { ...(car || {}), id: b.id || 'STATION_A', rssi: b.rssi || {}, heading: b.heading || car?.heading || null,
+          state: b.state || car?.state || null, dest: b.dest ?? car?.dest ?? null, at: Date.now(),
+          near: near ? near.sid : null, node: near ? map.stations[near.sid] : null };
+  return near;
+}
+app.post('/car', canWrite, (req, res) => {
+  const near = carUpdate(req.body || {});
+  broadcast();
+  res.json({ ok: true, near: near?.sid || null, node: car.node });
+});
+app.get('/car', (req, res) => res.json(car && Date.now() - car.at < CAR_STALE_MS ? car : null));
+// body: { rssi: {"1": -60, ...}, heading: 'N'|'E'|'S'|'W', to: "D_119" | "6119" | "6F_D_119", id? }
+app.post('/car/route', canWrite, (req, res) => {
+  const b = req.body || {};
+  const near = carUpdate({ ...b, state: 'ROUTING' });
+  if (!near) return res.status(409).json({ error: '근처 스테이션 신호가 없어요' });
+  let to = String(b.to || '').replace(/\s/g, '');
+  if (/^\d{4}$/.test(to)) to = `6F_D_${to.slice(1)}`;
+  else if (!to.startsWith('6F_')) to = `6F_${to.startsWith('D_') ? to : 'D_' + to}`;
+  const r = planRoute(map, car.node, to, b.heading);
+  if (r.error) return res.status(400).json(r);
+  car.route = { to, route: r.route, steps: r.steps, meters: r.meters, path: r.path, endHeading: r.endHeading };
+  car.dest = to;
+  console.log(`[로봇] ${label(near.sid)} 근처(${near.r}dBm), ${b.heading} 방향 → ${to}: ${r.route} (${r.meters}m)`);
+  broadcast();
+  res.json({ ok: true, from: car.node, near: near.sid, ...car.route });
+});
+
 let lastCorridor = { estimate: null, parts: [] };
 function broadcast() {
   const status = snapshot();
@@ -297,6 +342,7 @@ function broadcast() {
     corridor: { positions: corridor.positions, ...lastCorridor },
     room: { ...room, ...lastRoom },
     peers: peerSummary(),
+    car: car && Date.now() - car.at < CAR_STALE_MS ? car : null,
   });
 }
 
