@@ -286,6 +286,7 @@ setInterval(() => { if (peerCfg.auto) { const r = autoLayout(); if (!r.error) br
 // 차가 벽 스테이션 13개의 비콘(Major 7777)을 듣고 번호별 RSSI를 보냄 → 가장 센 스테이션 자리 = 차 위치
 // 키패드로 목적지·차 방향을 고르면 /car/route가 지도 최단 경로를 우노 명령(carroute.js)으로 바꿔 줌
 const CAR_STALE_MS = 15000;
+const lastStatusOf = id => snapshot()[id] ?? null;
 let car = null;   // { id, near, node, rssi, heading, state, dest, at, route }
 function carNearest(rssi) {
   let best = null;
@@ -297,7 +298,9 @@ function carNearest(rssi) {
   return best;
 }
 function carUpdate(b) {
-  const near = carNearest(b.rssi);
+  let near = carNearest(b.rssi);
+  // 차가 스테이션 신호를 못 들어도, 스테이션들이 차 비콘(123/123)을 재고 있으면 그 판단을 씀
+  if (!near && current && map.stations[current]) near = { sid: current, r: lastStatusOf(current), via: 'stations' };
   car = { ...(car || {}), id: b.id || 'STATION_A', rssi: b.rssi || {}, heading: b.heading || car?.heading || null,
           state: b.state || car?.state || null, dest: b.dest ?? car?.dest ?? null, at: Date.now(),
           near: near ? near.sid : null, node: near ? map.stations[near.sid] : null };
@@ -313,7 +316,7 @@ app.get('/car', (req, res) => res.json(car && Date.now() - car.at < CAR_STALE_MS
 app.post('/car/route', canWrite, (req, res) => {
   const b = req.body || {};
   const near = carUpdate({ ...b, state: 'ROUTING' });
-  if (!near) return res.status(409).json({ error: '근처 스테이션 신호가 없어요' });
+  if (!near) return res.status(409).json({ error: '근처 스테이션 신호가 없어요 (차도, 스테이션들도 서로 못 들음)' });
   let to = String(b.to || '').replace(/\s/g, '');
   if (/^\d{4}$/.test(to)) to = `6F_D_${to.slice(1)}`;
   else if (!to.startsWith('6F_')) to = `6F_${to.startsWith('D_') ? to : 'D_' + to}`;
