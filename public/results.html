@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로봇 실험 결과</title>
+<style>
+  :root { --bg:#15171d; --panel:#1f222b; --line:#2b2f3a; --text:#dde1ea; --muted:#8a92a3;
+          --rule:#4dabf7; --worm:#f06595; --hybrid:#9775fa; --ok:#69db7c; --bad:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; padding:16px; }
+  .wrap { max-width: 1100px; margin: 0 auto; display:grid; gap:14px; }
+  h1 { font-size:19px; margin:0; border-left:4px solid var(--worm); padding-left:8px; }
+  p.lead { color:var(--muted); font-size:13px; margin:4px 0 0; line-height:1.6; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; overflow-x:auto; }
+  h2 { font-size:13px; color:var(--muted); margin:0 0 10px; font-weight:600; }
+  .cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+  .card { border-radius:10px; padding:12px; background:#262a35; border-top:4px solid var(--c); }
+  .card b { font-size:15px; }
+  .kv { display:grid; grid-template-columns: 1fr auto; gap:4px 10px; margin-top:8px; font-size:13px; font-variant-numeric: tabular-nums; }
+  .kv span:nth-child(odd) { color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric: tabular-nums; min-width:720px; }
+  th, td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:right; }
+  th:nth-child(-n+4), td:nth-child(-n+4) { text-align:left; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  a, button { font-size:13px; }
+  a { color:#74c0fc; }
+  button { background:#2a2e3a; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer; }
+  .muted { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<script src="/nav.js"></script>
+<div class="wrap">
+  <div>
+    <h1>로봇 실험 결과 — 장애물 대응 방식 비교</h1>
+    <p class="lead">로봇카가 주행을 마칠 때마다 자동으로 기록돼요. 같은 목적지·같은 장애물 배치로 모드마다 5~10회씩 주행하세요.
+      (키패드 대기 화면에서 <b>*</b>를 누르면 모드가 바뀌어요)</p>
+  </div>
+  <section>
+    <h2>모드별 요약</h2>
+    <div class="cards" id="cards"></div>
+  </section>
+  <section>
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <h2 style="margin:0">전체 기록 <span class="muted" id="count"></span></h2>
+      <div class="row"><a href="/carlog.csv" download>CSV 내려받기</a><button id="clear" type="button">기록 지우기</button></div>
+    </div>
+    <table><thead><tr><th>시각</th><th>모드</th><th>목적지</th><th>결과</th><th>시간(초)</th><th>장애물</th><th>막힌 시간(초)</th><th>최소 앞거리(cm)</th><th>접촉</th><th>탈출</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="10" class="muted">아직 기록이 없어요. 로봇카로 한 번 주행해 보세요.</td></tr></tbody></table>
+  </section>
+  <p class="muted" id="msg"></p>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const MODES = [["R", "규칙", "var(--rule)"], ["W", "선충 커넥톰", "var(--worm)"], ["H", "병합", "var(--hybrid)"]];
+let data = [];
+const $ = id => document.getElementById(id);
+const avg = (a, k) => a.length ? (a.reduce((s, r) => s + (+r[k] || 0), 0) / a.length) : null;
+const f = (v, d = 1) => v == null ? "–" : v.toFixed(d);
+function render() {
+  $("cards").innerHTML = MODES.map(([m, name, c]) => {
+    const rs = data.filter(r => r.mode === m), ok = rs.filter(r => r.result === "ARRIVED");
+    return `<div class="card" style="--c:${c}"><b>${name}</b> <span class="muted">(${rs.length}회)</span>
+      <div class="kv"><span>도착률</span><span>${rs.length ? Math.round(ok.length / rs.length * 100) + "%" : "–"}</span>
+      <span>평균 도착 시간</span><span>${f(avg(ok, "time"))}초</span>
+      <span>평균 장애물 대응</span><span>${f(avg(rs, "episodes"))}회</span>
+      <span>평균 막힌 시간</span><span>${f(avg(rs, "blocked"))}초</span>
+      <span>평균 접촉</span><span>${f(avg(rs, "touches"), 2)}회</span>
+      <span>평균 최소 앞거리</span><span>${f(avg(rs, "minFront"), 0)}cm</span></div></div>`;
+  }).join("");
+  $("count").textContent = data.length ? `· ${data.length}회` : "";
+  $("rows").innerHTML = data.length ? data.slice().reverse().map(r => `<tr>
+    <td>${new Date(r.at).toLocaleString("ko-KR", { hour12: false })}</td>
+    <td>${(MODES.find(m => m[0] === r.mode) || [, r.mode])[1]}</td><td>${r.dest} (${r.route})</td>
+    <td style="color:${r.result === "ARRIVED" ? "var(--ok)" : "var(--bad)"}">${r.result}</td>
+    <td>${f(r.time)}</td><td>${r.episodes ?? "–"}</td><td>${f(r.blocked)}</td><td>${r.minFront ?? "–"}</td><td>${r.touches ?? "–"}</td><td>${r.escapes ?? "–"}</td></tr>`).join("")
+    : '<tr><td colspan="10" class="muted">아직 기록이 없어요. 로봇카로 한 번 주행해 보세요.</td></tr>';
+}
+fetch("/carlog.json").then(r => r.json()).then(d => { data = d; render(); });
+if (typeof io !== "undefined") io().on("carlog", row => { if (row === null) data = []; else data.push(row); render(); });
+$("clear").onclick = async () => {
+  let key = ""; try { key = localStorage.getItem("dgu-key") || ""; } catch (e) {}
+  const r = await fetch("/carlog/clear", { method: "POST", headers: { "X-Device-Key": key } });
+  $("msg").textContent = r.ok ? "기록을 지웠어요." : "지우려면 방 측정 화면에서 관리 키를 먼저 저장하세요 (" + r.status + ")";
+};
+render();
+</script>
+</body>
+</html>

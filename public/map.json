@@ -1,6 +1,6 @@
 {
  "building": "신공학관",
- "pxPerM": 18,
+ "pxPerM": 15.7,
  "canvas": {
   "w": 2000,
   "h": 1260
@@ -4020,24 +4020,34 @@
   ]
  ],
  "stations": {
-  "STATION_01": "5F_W_M",
-  "STATION_02": "5F_B_EV",
-  "STATION_03": "5F_T_E",
-  "STATION_04": "5F_W2_S",
-  "STATION_05": "6F_W_M",
-  "STATION_06": "6F_B_EV",
-  "STATION_07": "6F_T_E",
-  "STATION_08": "6F_W2_S"
+  "STATION_01": "6F_D_103",
+  "STATION_02": "6F_D_105",
+  "STATION_03": "6F_D_107",
+  "STATION_04": "6F_D_109",
+  "STATION_05": "6F_D_112",
+  "STATION_06": "6F_D_113",
+  "STATION_07": "6F_D_119",
+  "STATION_08": "6F_D_127",
+  "STATION_09": "6F_D_141",
+  "STATION_10": "6F_D_중앙엘리베이터",
+  "STATION_11": "6F_D_130",
+  "STATION_12": "6F_T_E",
+  "STATION_13": "6F_B_E"
  },
  "stationNotes": {
-  "STATION_01": "5층 서쪽 복도 (x107~x109 앞)",
-  "STATION_02": "5층 중앙 엘리베이터 앞",
-  "STATION_03": "5층 북동 엘리베이터 앞",
-  "STATION_04": "5층 2구역 입구",
-  "STATION_05": "6층 서쪽 복도 (x107~x109 앞)",
-  "STATION_06": "6층 중앙 엘리베이터 앞",
-  "STATION_07": "6층 북동 엘리베이터 앞",
-  "STATION_08": "6층 2구역 입구"
+  "STATION_01": "6층 6103 앞 (키 1)",
+  "STATION_02": "6층 6105 · 중앙계단 앞 (키 2, D)",
+  "STATION_03": "6층 6107 · 남자화장실 앞 (키 3, A)",
+  "STATION_04": "6층 6109 · 여자화장실 앞 (키 4, B)",
+  "STATION_05": "6층 6112 앞 (키 5)",
+  "STATION_06": "6층 6113 앞 (키 6)",
+  "STATION_07": "6층 6119 · 6122 앞 (키 7, 8)",
+  "STATION_08": "6층 6127 앞 (키 9)",
+  "STATION_09": "6층 6141 앞 (키 0)",
+  "STATION_10": "6층 중앙 엘리베이터 앞 (키 C)",
+  "STATION_11": "6층 6130 앞 (가운데 세로 복도)",
+  "STATION_12": "6층 북동 엘리베이터 앞 (북쪽 복도 끝)",
+  "STATION_13": "6층 남쪽 복도 남동계단 갈림길"
  },
  "destinations": [
   {

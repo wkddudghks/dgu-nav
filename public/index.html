@@ -33,6 +33,7 @@
 </style>
 </head>
 <body>
+<script src="/nav.js"></script>
 <header>
   <h1 id="title">신공학관 내비게이션</h1>
   <div class="tabs" id="tabs"></div>
@@ -58,6 +59,7 @@ const canvas = document.getElementById('map');
 const ctx = canvas.getContext('2d');
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 let lastDist = {};
+let car = null;   // 길잡이 로봇 (STATION_A)
 let M, nodeById, adj, viewFloor, here = null, liveNode = null, autoFloor = true, lastStatus = {}, liveStation = null;
 
 fetch('map.json').then(r => r.json()).then(init);
@@ -73,7 +75,8 @@ function init(map) {
     (adj[a] ||= []).push([b, cost]); (adj[b] ||= []).push([a, cost]);
   }
   if (M.canvas) { canvas.width = M.canvas.w; canvas.height = M.canvas.h; }
-  viewFloor = M.floors[0].id;
+  const sFloors = Object.values(M.stations).map(id => nodeById[id]?.floor).filter(Boolean);   // 스테이션이 있는 층(6층)을 먼저 보여줌
+  viewFloor = sFloors.length ? sFloors[0] : M.floors[0].id;
   const tabs = document.getElementById('tabs');
   for (const f of M.floors) {
     const b = document.createElement('button');
@@ -198,6 +201,20 @@ function render() {
     ctx.fillStyle = 'rgba(255,255,255,.25)';
     for (const n of M.nodes) if (n.floor === viewFloor) { ctx.beginPath(); ctx.arc(n.x, n.y, 6, 0, 7); ctx.fill(); }
   }
+  // 길잡이 로봇 (STATION_A): 계획한 경로(주황 점선) + 차 위치(주황 네모 A)
+  if (car && car.node && nodeById[car.node]?.floor === viewFloor) {
+    if (car.route?.path && car.state !== 'IDLE') {
+      ctx.strokeStyle = '#ff9f43'; ctx.lineWidth = 4; ctx.setLineDash([10, 8]);
+      ctx.beginPath();
+      car.route.path.forEach((id, i) => { const p = nodeById[id]; if (p) i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    const n = nodeById[car.node];
+    ctx.fillStyle = '#ff9f43'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+    ctx.fillRect(n.x + 14, n.y - 14, 28, 28); ctx.strokeRect(n.x + 14, n.y - 14, 28, 28);
+    ctx.fillStyle = '#15171d'; ctx.font = 'bold 16px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('A', n.x + 28, n.y + 1);
+  }
   // 현재 위치
   if (here && nodeById[here].floor === viewFloor) {
     const n = nodeById[here];
@@ -247,6 +264,7 @@ function onCanvasClick(e) {
 function connect() {
   if (typeof io === 'undefined') return; // 서버 없이 파일로 열었을 때 (데모 모드만 사용)
   io().on('update', d => {
+    car = d.car || null;
     lastStatus = d.status; lastDist = d.dist || {}; liveStation = d.station; liveNode = d.node;
     if (!document.getElementById('demo').checked) {
       if (d.node !== here) autoFloor = true;
