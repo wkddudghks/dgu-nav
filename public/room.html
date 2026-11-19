@@ -63,6 +63,21 @@
     </section>
 
     <div class="side">
+      <section id="carBox">
+        <h2>자동차 A <span class="muted" id="carInfo">신호 없음</span></h2>
+        <div class="big" id="carPos" style="font-size:20px">—</div>
+        <div class="muted" id="carSub" style="margin:4px 0 10px">차 ESP32(STATION_A)를 켜면 여기에 나타나요</div>
+        <div class="row" style="gap:6px;align-items:center;margin-bottom:8px">
+          <label for="carHead">차가 보는 쪽</label>
+          <select id="carHead" style="background:#2a2e3a;color:var(--text);border:0;border-radius:6px;padding:6px 8px">
+            <option value="N">↑ 위</option><option value="E">→ 오른쪽</option><option value="S">↓ 아래</option><option value="W">← 왼쪽</option>
+          </select>
+          <button type="button" id="carStop" class="ghost">■ 멈춤</button>
+        </div>
+        <div id="carGo" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px"></div>
+        <div class="muted" id="carMsg" style="margin-top:8px">버튼을 누르면 5초 안에 차가 받아서 그 스테이션으로 가요. 키패드: 1~9 = S1~S9, 0 = S10, A·B·C = S11~S13, '*' = 네모방 ↔ 신공학관 전환</div>
+      </section>
+
       <section>
         <h2>폰 추정 위치</h2>
         <div class="big" id="est">신호 없음</div>
@@ -126,6 +141,7 @@ const r1 = v => Math.round(v * 10) / 10;
 
 let room = { width: 5, height: 4, stations: {} };
 let live = { estimate: null, parts: [] };
+let car = null;            // 자동차 A (STATION_A)
 function updateIds() {   // 서버에 위치가 있거나 신호가 들어온 스테이션까지 포함
   const set = new Set(IDS);
   Object.keys(room.stations || {}).forEach(id => set.add(id));
@@ -211,6 +227,25 @@ function draw() {
     ctx.fillStyle = '#ff4d5a'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(a, b, 8, 0, 7); ctx.fill(); ctx.stroke();
   }
+  // 자동차 A: 가는 길(점선) + 차(주황 네모, 화살표 = 보는 쪽)
+  if (car && car.roomPos) {
+    const rp = car.route?.roomPath;
+    if (rp && rp.length > 1 && car.mode === 'room' && car.state !== 'IDLE') {
+      ctx.strokeStyle = '#ffa94d'; ctx.lineWidth = 3; ctx.setLineDash([8, 6]); ctx.beginPath();
+      rp.forEach(([x, y], i) => { const [a, b] = px(x, y); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); });
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    const [a, b] = px(car.roomPos.x, car.roomPos.y);
+    ctx.save(); ctx.translate(a, b);
+    ctx.rotate({ N: 0, E: Math.PI / 2, S: Math.PI, W: -Math.PI / 2 }[car.heading] || 0);
+    ctx.fillStyle = '#f76707'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-14, -16, 28, 32, 5) : ctx.rect(-14, -16, 28, 32); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fcc419'; for (const [wx, wy] of [[-18, -12], [14, -12], [-18, 4], [14, 4]]) ctx.fillRect(wx, wy, 4, 9);
+    if (car.heading) { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(-7, -17); ctx.lineTo(7, -17); ctx.fill(); }
+    ctx.restore();
+    ctx.fillStyle = '#fff'; ctx.font = '700 13px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('A', a, b + 1);
+  }
   // 스테이션
   IDS.forEach(id => {
     const s = room.stations[id]; if (!s) return;
@@ -281,7 +316,42 @@ function showLayout(r) {
   $('autoMsg').textContent = `${new Date(r.at).toLocaleTimeString()} 배치: 스테이션 ${r.stations}개, 쌍 ${r.pairs}개, 거리 잔차 ${r.rms}m${ref}${warn}`;
 }
 
-function render() { updateIds(); draw(); renderSide(); }
+function render() { updateIds(); draw(); renderSide(); renderCar(); }
+
+// ---- 자동차 A ----
+const STATE_KO = { IDLE: '대기', SELECT: '목적지 고르는 중', ROUTING: '경로 계산 중', DRIVING: '주행 중' };
+function renderCar() {
+  const g = $('carGo');
+  const goIds = IDS.filter(id => room.stations && room.stations[id]);
+  if (g.dataset.ids !== goIds.join()) {
+    g.dataset.ids = goIds.join();
+    g.innerHTML = goIds.map(id => `<button type="button" data-go="${num(id)}" style="background:${colorOf(id)};color:#15171d;font-weight:700">${lab(id)}</button>`).join('');
+    g.querySelectorAll('button').forEach(b => b.onclick = () => carGo(b.dataset.go));
+  }
+  if (!car) { $('carInfo').textContent = '신호 없음'; $('carPos').textContent = '—'; $('carSub').textContent = '차 ESP32(STATION_A)를 켜면 여기에 나타나요'; return; }
+  const n = car.roomPos?.n || 0;
+  $('carInfo').textContent = `${car.mode === 'room' ? '네모방 모드' : '신공학관 모드'} · ${STATE_KO[car.state] || car.state || ''}`;
+  $('carPos').textContent = car.roomPos ? `(${car.roomPos.x.toFixed(1)}, ${car.roomPos.y.toFixed(1)}) m` : '위치 모름';
+  $('carSub').textContent = car.roomPos
+    ? `들리는 스테이션 ${n}개${n < 3 ? ' · 3개 이상 들려야 정확해요' : ''}${car.dest && car.mode === 'room' ? ' · 목적지 ' + lab(car.dest) : ''}${car.route?.route && car.mode === 'room' ? ' · ' + car.route.route : ''}`
+    : '차가 스테이션 신호를 못 듣고 있어요';
+  if (car.heading && document.activeElement !== $('carHead') && !$('carHead').dataset.touched) $('carHead').value = car.heading;
+}
+$('carHead').onchange = () => { $('carHead').dataset.touched = '1'; };
+async function carCmd(body, okText) {
+  try {
+    const res = await fetch('/car/go', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Device-Key': keyHeader() }, body: JSON.stringify(body) });
+    if (res.status === 401 || res.status === 403) { $('keyRow').hidden = false; $('carMsg').textContent = '차를 움직이려면 위 칸에 관리 키를 넣고 저장하세요.'; return; }
+    const d = await res.json();
+    $('carMsg').textContent = d.error || okText;
+  } catch (e) { $('carMsg').textContent = '서버에 연결할 수 없어요.'; }
+}
+function carGo(n) {
+  if (!car) { $('carMsg').textContent = '차가 연결돼 있지 않아요 (차 ESP32 전원·와이파이 확인).'; return; }
+  const h = $('carHead').value; delete $('carHead').dataset.touched;
+  carCmd({ to: +n, heading: h }, `S${n}(으)로 보내는 중… 차가 받으면 출발해요 (차가 보는 쪽: ${$('carHead').selectedOptions[0].text})`);
+}
+$('carStop').onclick = () => carCmd({ stop: true }, '멈춤 명령을 보냈어요.');
 
 function keyHeader() { let key = ''; try { key = localStorage.getItem('dgu-key') || ''; } catch (e) {} return key; }
 async function auto(body) {
@@ -389,10 +459,12 @@ fetch('/room').then(r => r.json()).then(d => {
   room = { width: d.width, height: d.height, stations: d.stations };
   live = { estimate: d.estimate, parts: d.parts || [] };
   render();
+  fetch('/car').then(r => r.json()).then(c => { car = c; render(); }).catch(() => {});
 }).catch(() => { $('msg').textContent = '서버에 연결할 수 없어요. node server.js 를 실행하세요.'; render(); });
 if (typeof io !== 'undefined') io().on('update', d => {
   if (!d.room) return;
   live = { estimate: d.room.estimate, parts: d.room.parts || [] };
+  car = d.car || null;
   if (!drag && !pending) room = { width: d.room.width, height: d.room.height, stations: d.room.stations };
   if (d.peers) { const prevAt = peers.last?.at; peers = d.peers; if (d.peers.last && d.peers.last.at !== prevAt) showLayout(d.peers.last); }
   render();
