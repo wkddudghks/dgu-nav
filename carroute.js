@@ -85,4 +85,39 @@ function planRoute(map, from, to, heading, floor = 6) {
   return { route: out.join(','), steps, meters: +sp.meters.toFixed(1), endHeading: legs[legs.length - 1].dir, path: sp.path, legs: legs.length };
 }
 
-module.exports = { planRoute, nearestDir, turnOf };
+/**
+ * 네모방 경로: 방 안은 복도가 없으니 가로·세로 두 번 꺾어 가는 길 (차는 90°씩만 돎)
+ *  from, to: {x, y} (m, 방 좌표: x 오른쪽, y 아래쪽), heading: 'N'|'E'|'S'|'W' (화면 위 = N)
+ *  stopShort: 스테이션 바로 앞에서 멈출 거리(m) — 스테이션에 부딪히지 않게
+ *  우노 명령은 G<cm>(자이로 직진)와 제자리 회전 < > U
+ */
+function planRoomRoute(from, to, heading, stopShort = 0.3) {
+  if (!DIRS[heading]) return { error: '방향은 N, E, S, W 중 하나' };
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const MIN = 0.15;
+  const ax = { dir: dx >= 0 ? 'E' : 'W', m: Math.abs(dx) }, ay = { dir: dy >= 0 ? 'S' : 'N', m: Math.abs(dy) };
+  // 지금 보는 방향과 같은 축을 먼저 가면 회전이 한 번 줄어듦
+  const first = (heading === 'E' || heading === 'W') ? [ax, ay] : [ay, ax];
+  let legs = first.filter(l => l.m >= MIN).map(l => ({ ...l }));
+  if (!legs.length) return { route: '', steps: ['이미 목적지 앞이에요'], meters: 0, endHeading: heading, path: [[from.x, from.y]], legs: 0 };
+  const last = legs[legs.length - 1];
+  last.m = Math.max(0, last.m - stopShort);
+  if (last.m < MIN) legs.pop();
+  if (!legs.length) return { route: '', steps: ['이미 목적지 앞이에요'], meters: 0, endHeading: heading, path: [[from.x, from.y]], legs: 0 };
+  const out = [], steps = [], path = [[from.x, from.y]];
+  let h = heading, px = from.x, py = from.y, total = 0;
+  const KO = { 1: '오른쪽', '-1': '왼쪽', 2: '뒤로' };
+  for (const l of legs) {
+    const t = turnOf(h, l.dir);
+    if (t === 1) out.push('>'); else if (t === -1) out.push('<'); else if (t === 2) out.push('U');
+    if (t) steps.push(`제자리에서 ${KO[t]} 돌기`);
+    const cm = Math.max(20, Math.round(l.m * 100 / 10) * 10);
+    out.push(`G${cm}`); steps.push(`${(cm / 100).toFixed(1)}m 직진`);
+    const [ux, uy] = DIRS[l.dir]; px += ux * cm / 100; py += uy * cm / 100; path.push([+px.toFixed(2), +py.toFixed(2)]);
+    total += cm / 100; h = l.dir;
+  }
+  steps.push('도착');
+  return { route: out.join(','), steps, meters: +total.toFixed(1), endHeading: h, path, legs: legs.length };
+}
+
+module.exports = { planRoute, planRoomRoute, nearestDir, turnOf };
