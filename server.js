@@ -27,7 +27,7 @@ const MIN_RSSI = -90;   // 이보다 약하면 "근처 아님"으로 봄
 const MAX_STATIONS = 20; // STATION_01 ~ STATION_20 까지 받음
 const isStationId = id => typeof id === 'string' && /^STATION_\d{2}$/.test(id) && +id.slice(8) >= 1 && +id.slice(8) <= MAX_STATIONS;
 const { solveLayout, median, label } = require('./selfloc');
-const { planRoute } = require('./carroute');
+const { planRoute, planRoomRoute } = require('./carroute');
 
 const map = JSON.parse(fs.readFileSync(path.join(__dirname, 'public', 'map.json'), 'utf8'));
 const nodeById = Object.fromEntries(map.nodes.map(n => [n.id, n]));
@@ -123,14 +123,14 @@ function fillRoomStations() {
 fillRoomStations();
 let roomSmooth = null;
 
-function estimateRoom(status) {
+function roomFit(status) {
   const parts = [];
   for (const [id, s] of Object.entries(room.stations)) {
     if (status[id] == null) continue;
     const d = rssiToMeters(status[id]);
     parts.push({ id, rssi: status[id], d: +d.toFixed(2), x: s.x, y: s.y });
   }
-  if (!parts.length) { roomSmooth = null; return { estimate: null, parts }; }
+  if (!parts.length) return { best: null, parts };
   let best = null, bestErr = Infinity;
   const STEP = 0.05;
   for (let x = 0; x <= room.width + 1e-9; x += STEP)
@@ -142,6 +142,11 @@ function estimateRoom(status) {
       }
       if (err < bestErr) { bestErr = err; best = { x, y }; }
     }
+  return { best, parts };
+}
+function estimateRoom(status) {
+  const { best, parts } = roomFit(status);
+  if (!best) { roomSmooth = null; return { estimate: null, parts }; }
   // 화면에서 덜 튀도록 이전 값과 섞기
   roomSmooth = roomSmooth ? { x: roomSmooth.x * 0.5 + best.x * 0.5, y: roomSmooth.y * 0.5 + best.y * 0.5 } : best;
   return { estimate: { x: +roomSmooth.x.toFixed(2), y: +roomSmooth.y.toFixed(2) }, parts };
@@ -297,26 +302,61 @@ function carNearest(rssi) {
   }
   return best;
 }
+// 차가 들은 신호(번호 → RSSI)로 네모방 안 차 위치 추정 (폰 위치 추정과 같은 방법)
+let carRoomSmooth = null;
+function carRoomPos(rssi) {
+  const st = {};
+  for (const [k, r] of Object.entries(rssi || {})) {
+    const sid = /^\d+$/.test(k) ? `STATION_${String(+k).padStart(2, '0')}` : k;
+    if (room.stations[sid] && typeof r === 'number' && r >= -95) st[sid] = r;
+  }
+  const { best, parts } = roomFit(st);
+  if (!best) { carRoomSmooth = null; return null; }
+  carRoomSmooth = carRoomSmooth ? { x: carRoomSmooth.x * 0.5 + best.x * 0.5, y: carRoomSmooth.y * 0.5 + best.y * 0.5 } : best;
+  return { x: +carRoomSmooth.x.toFixed(2), y: +carRoomSmooth.y.toFixed(2), n: parts.length };
+}
 function carUpdate(b) {
   let near = carNearest(b.rssi);
-  // 차가 스테이션 신호를 못 들어도, 스테이션들이 차 비콘(123/123)을 재고 있으면 그 판단을 씀
-  if (!near && current && map.stations[current]) near = { sid: current, r: lastStatusOf(current), via: 'stations' };
+  // 차가 스테이션 신호를 못 들어도, 차가 비콘(123/123)을 쏘는 중이면 스테이션들이 잰 위치를 씀
+  //  (차가 비콘을 안 쏘면 그 위치는 폰 위치라 쓰지 않음 — 차 = 움직이는 스테이션)
+  if (!near && b.beacon === true && current && map.stations[current]) near = { sid: current, r: lastStatusOf(current), via: 'stations' };
   car = { ...(car || {}), id: b.id || 'STATION_A', rssi: b.rssi || {}, heading: b.heading || car?.heading || null,
           state: b.state || car?.state || null, dest: b.dest ?? car?.dest ?? null, at: Date.now(),
-          near: near ? near.sid : null, node: near ? map.stations[near.sid] : null };
+          near: near ? near.sid : null, node: near ? map.stations[near.sid] : null,
+          mode: b.mode || car?.mode || 'map', roomPos: carRoomPos(b.rssi) };
   return near;
 }
+// 네모방 화면의 버튼 → 차에 보낼 명령을 맡아 두었다가, 차가 다음 위치 보고(/car) 때 받아 감
+let carCmd = null;   // { go: "STATION_05", heading: "N" } | { stop: true }, at
+app.post('/car/go', canWrite, (req, res) => {
+  const b = req.body || {};
+  if (!car || Date.now() - car.at > CAR_STALE_MS) return res.status(409).json({ error: '차가 연결돼 있지 않아요 (차 ESP32 전원·와이파이 확인)' });
+  if (b.stop) { carCmd = { stop: true, at: Date.now() }; return res.json({ ok: true }); }
+  const n = parseInt(String(b.to ?? '').replace(/\D/g, ''), 10);
+  const sid = `STATION_${String(n).padStart(2, '0')}`;
+  if (!room.stations[sid]) return res.status(400).json({ error: `네모방에 ${sid}가 없어요` });
+  if (!['N', 'E', 'S', 'W'].includes(b.heading)) return res.status(400).json({ error: '방향은 N, E, S, W 중 하나' });
+  carCmd = { go: sid, heading: b.heading, at: Date.now() };
+  console.log(`[로봇·네모방] 화면에서 ${label(sid)}로 가라는 명령 (차 방향 ${b.heading})`);
+  res.json({ ok: true });
+});
 app.post('/car', canWrite, (req, res) => {
   const near = carUpdate(req.body || {});
   broadcast();
-  res.json({ ok: true, near: near?.sid || null, node: car.node });
+  const out = { ok: true, near: near?.sid || null, node: car.node, roomPos: car.roomPos };
+  if (carCmd && Date.now() - carCmd.at < 30000) {          // 30초 넘은 명령은 버림
+    if (carCmd.stop) out.cmd = 'STOP'; else { out.cmd = 'GO'; out.go = String(parseInt(carCmd.go.slice(8), 10)); out.goHeading = carCmd.heading; }
+  }
+  carCmd = null;
+  res.json(out);
 });
 app.get('/car', (req, res) => res.json(car && Date.now() - car.at < CAR_STALE_MS ? car : null));
 // body: { rssi: {"1": -60, ...}, heading: 'N'|'E'|'S'|'W', to: "D_119" | "6119" | "6F_D_119", id? }
 app.post('/car/route', canWrite, (req, res) => {
   const b = req.body || {};
+  if (b.mode === 'room') return roomRoute(b, res);
   const near = carUpdate({ ...b, state: 'ROUTING' });
-  if (!near) return res.status(409).json({ error: '근처 스테이션 신호가 없어요 (차도, 스테이션들도 서로 못 들음)' });
+  if (!near) return res.status(409).json({ error: '차가 들은 스테이션 신호가 없어요 (스테이션 가까이로 옮기거나 스테이션 전원 확인)' });
   let to = String(b.to || '').replace(/\s/g, '');
   if (/^\d{4}$/.test(to)) to = `6F_D_${to.slice(1)}`;
   else if (!to.startsWith('6F_')) to = `6F_${to.startsWith('D_') ? to : 'D_' + to}`;
@@ -328,6 +368,25 @@ app.post('/car/route', canWrite, (req, res) => {
   broadcast();
   res.json({ ok: true, from: car.node, near: near.sid, ...car.route });
 });
+
+// 네모방: 목적지 = 스테이션 (to: "5" | "S5" | "STATION_05"), 차 위치 = 차가 들은 스테이션 신호로 추정
+function roomRoute(b, res) {
+  carUpdate({ ...b, state: 'ROUTING', mode: 'room' });
+  const n = parseInt(String(b.to || '').replace(/\D/g, ''), 10);
+  const sid = `STATION_${String(n).padStart(2, '0')}`;
+  const target = room.stations[sid];
+  if (!target) return res.status(400).json({ error: `네모방에 ${sid}가 없어요` });
+  const from = car.roomPos;
+  if (!from) return res.status(409).json({ error: '차가 들은 스테이션 신호가 없어요 (스테이션 전원 확인)' });
+  const r = planRoomRoute(from, target, b.heading, 0.3);
+  if (r.error) return res.status(400).json(r);
+  const warn = from.n < 3 ? `스테이션 ${from.n}개만 들려서 차 위치가 부정확할 수 있어요` : null;
+  car.route = { to: sid, route: r.route, steps: r.steps, meters: r.meters, roomPath: r.path, endHeading: r.endHeading };
+  car.dest = sid;
+  console.log(`[로봇·네모방] (${from.x}, ${from.y})m, ${b.heading} 방향 → ${label(sid)}: ${r.route || '이미 도착'} (${r.meters}m)${warn ? ' ⚠ ' + warn : ''}`);
+  broadcast();
+  res.json({ ok: true, from, near: label(sid), warn, ...car.route });
+}
 
 let lastCorridor = { estimate: null, parts: [] };
 function broadcast() {
