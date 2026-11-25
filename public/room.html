@@ -38,7 +38,7 @@
 <div class="wrap">
   <div>
     <h1>방 위치 측정</h1>
-    <p class="lead">스테이션(S1~S13)을 끌어서 실제로 놓은 자리에 맞추거나, <b>자동 배치</b>로 스테이션끼리 잰 신호로 위치를 정하세요. 10cm 단위로 저장돼요.
+    <p class="lead">스테이션(S1~S4)을 끌어서 실제로 놓은 자리에 맞추거나, <b>자동 배치</b>로 스테이션끼리 잰 신호로 위치를 정하세요. 10cm 단위로 저장돼요.
       빈 곳을 누르면 그 자리가 <b style="color:var(--ok)">실제 위치(초록 +)</b>로 찍히고, "오차 기록"을 누르면 추정 위치와 비교해요.</p>
   </div>
 
@@ -75,7 +75,7 @@
           <button type="button" id="carStop" class="ghost">■ 멈춤</button>
         </div>
         <div id="carGo" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px"></div>
-        <div class="muted" id="carMsg" style="margin-top:8px">버튼을 누르면 5초 안에 차가 받아서 그 스테이션으로 가요. 키패드: 1~9 = S1~S9, 0 = S10, A·B·C = S11~S13, '*' = 네모방 ↔ 신공학관 전환</div>
+        <div class="muted" id="carMsg" style="margin-top:8px">버튼을 누르면 5초 안에 차가 받아서 그 스테이션으로 가요. 키패드: 1~4 = S1~S4, '*' = 네모방 ↔ 신공학관 전환</div>
       </section>
 
       <section>
@@ -129,7 +129,7 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
-const BASE_N = 13;   // 항상 보이는 스테이션 수 (S1 ~ S13)
+const BASE_N = 4;    // 네모방 스테이션 수 (S1 ~ S4): 핫스팟에 스테이션 4개 + 자동차 1개
 let IDS = Array.from({ length: BASE_N }, (_, i) => `STATION_${String(i + 1).padStart(2, '0')}`);
 const num = id => parseInt(id.slice(8), 10);
 const lab = id => 'S' + num(id);
@@ -146,7 +146,7 @@ function updateIds() {   // 서버에 위치가 있거나 신호가 들어온 �
   const set = new Set(IDS);
   Object.keys(room.stations || {}).forEach(id => set.add(id));
   live.parts.forEach(p => set.add(p.id));
-  IDS = [...set].sort((a, b) => num(a) - num(b));
+  IDS = [...set].filter(id => num(id) <= BASE_N).sort((a, b) => num(a) - num(b));
 }
 let drag = null;           // 끌고 있는 스테이션 ID
 let pending = false;       // 저장 못 한 변경이 있음 (키 입력 대기)
