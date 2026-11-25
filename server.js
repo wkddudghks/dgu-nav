@@ -99,9 +99,12 @@ let room = {
 };
 try { room = JSON.parse(fs.readFileSync(ROOM_FILE, 'utf8')); } catch (e) {}
 const r1 = v => Math.round(v * 10) / 10;   // 10cm 단위로 맞추기
-// 방 화면에 항상 보일 스테이션 수 (S1 ~ S13). 위치가 없는 스테이션은 빈 자리에 고르게 놓음
-const ROOM_STATIONS = 13;
+// 네모방에서 쓰는 스테이션 수 (S1 ~ S4). 폰 핫스팟에 붙는 기기가 최대 5개라 스테이션 4개 + 자동차 1개
+//  이 번호를 넘는 스테이션은 네모방 배치·위치 계산에서 빠짐. 위치가 없는 스테이션은 빈 자리에 고르게 놓음
+const ROOM_STATIONS = 4;
+const isRoomStation = id => isStationId(id) && +id.slice(8) <= ROOM_STATIONS;
 function fillRoomStations() {
+  for (const id of Object.keys(room.stations)) if (!isRoomStation(id)) delete room.stations[id];   // S5 이후는 지움
   const ids = Array.from({ length: ROOM_STATIONS }, (_, i) => `STATION_${String(i + 1).padStart(2, '0')}`);
   const missing = ids.filter(id => !room.stations[id]);
   if (!missing.length) return;
@@ -195,6 +198,7 @@ app.post('/room', canWrite, (req, res) => {
   const stations = {};
   for (const [id, s] of Object.entries(b.stations)) {
     if (!isStationId(id)) return res.sendStatus(400);
+    if (!isRoomStation(id)) continue;                 // S5 이후는 저장 안 함
     if (!s || !Number.isFinite(+s.x) || !Number.isFinite(+s.y)) return res.sendStatus(400);
     stations[id] = { x: r1(Math.min(Math.max(+s.x, 0), w)), y: r1(Math.min(Math.max(+s.y, 0), h)) };
   }
@@ -229,6 +233,7 @@ function peerLinks() {
     const rssi = median(v.s);
     if (rssi < PEER_MIN_RSSI) continue;
     const [a, b] = k.split('|');
+    if (!isRoomStation(a) || !isRoomStation(b)) continue;   // 네모방 스테이션(S1~S4)끼리만
     out.push({ a, b, rssi: Math.round(rssi), n: v.s.length, d: +rssiToDistPeer(rssi).toFixed(2) });
   }
   return out;
@@ -469,5 +474,5 @@ udp.bind(() => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`서버 실행: http://localhost:${PORT}`);
   for (const a of lanAddrs()) console.log(`  폰/다른 기기에서: http://${a.address}:${PORT}`);
-  console.log(`층 지도 스테이션: ${Object.keys(map.stations).length}개, 층: ${map.floors.map(f => f.id + 'F').join(', ')} · 방 화면은 STATION_01~${MAX_STATIONS} 모두 받음`);
+  console.log(`층 지도 스테이션: ${Object.keys(map.stations).length}개, 층: ${map.floors.map(f => f.id + 'F').join(', ')} · 네모방은 S1~S${ROOM_STATIONS}만 사용`);
 });
