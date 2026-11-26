@@ -241,7 +241,21 @@ function peerLinks() {
 const rssiToDistPeer = r => Math.pow(10, (peerCfg.tx - r) / (10 * peerCfg.n));
 function peerSummary() {
   const links = peerLinks();
-  return { links, tx: peerCfg.tx, n: peerCfg.n, auto: peerCfg.auto, ref: peerCfg.ref, last: lastLayout };
+  return { links, tx: peerCfg.tx, n: peerCfg.n, auto: peerCfg.auto, ref: peerCfg.ref, last: lastLayout, lock: layoutLock };
+}
+// 배치 고정: 네모방에서 목적지(스테이션)를 정하면 도착할 때까지 자동 배치를 멈춤 → 목적지 위치가 바뀌지 않음
+//  풀리는 때: 차가 주행한 뒤 대기(IDLE)로 돌아옴(도착·멈춤) / 화면의 "고정 풀기" / 10분 지남
+let layoutLock = null;   // { sid, at, drove }
+const LOCK_MAX_MS = 10 * 60 * 1000;
+function lockLayout(sid, why) {
+  if (layoutLock && layoutLock.sid === sid) return;
+  layoutLock = { sid, at: Date.now(), drove: false };
+  console.log(`[자동 배치] ${label(sid)} 목적지로 정해짐 → 배치 고정 (${why})`);
+}
+function unlockLayout(why) {
+  if (!layoutLock) return;
+  console.log(`[자동 배치] 배치 고정 풀림 (${why})`);
+  layoutLock = null;
 }
 
 app.post('/peers', canWrite, (req, res) => {
@@ -261,6 +275,7 @@ app.get('/peers', (req, res) => res.json(peerSummary()));
 
 // 자동 배치 계산 → 방 화면 스테이션 위치로 적용
 function autoLayout() {
+  if (layoutLock) return { error: `${label(layoutLock.sid)}(으)로 가는 중이라 배치를 고정했어요. 도착하면 다시 자동 배치해요.`, locked: true };
   const links = peerLinks();
   const ids = [...new Set(links.flatMap(l => [l.a, l.b]))].sort();
   if (ids.length < 3) return { error: `스테이션끼리 잰 신호가 부족해요 (연결된 스테이션 ${ids.length}개, 3개 이상 필요)` };
@@ -277,6 +292,7 @@ function autoLayout() {
 //  ref = 두 스테이션 사이를 줄자로 잰 거리(m) → 배치 전체 크기를 그 거리에 맞춤 (저장돼서 다음 배치에도 쓰임)
 app.post('/room/auto', canWrite, (req, res) => {
   const b = req.body || {};
+  if (b.unlock) { unlockLayout('화면에서 고정 풀기'); broadcast(); return res.json({ ok: true, auto: peerCfg.auto, room }); }
   if (b.ref === 'clear') { peerCfg.ref = null; savePeerCfg(); }
   else if (b.ref) {
     const { a, b: bb, d } = b.ref;
@@ -290,7 +306,10 @@ app.post('/room/auto', canWrite, (req, res) => {
   broadcast();
   res.status(out.error ? 409 : 200).json({ ...out, auto: peerCfg.auto, tx: peerCfg.tx, room });
 });
-setInterval(() => { if (peerCfg.auto) { const r = autoLayout(); if (!r.error) broadcast(); } }, 10000);
+setInterval(() => {
+  if (layoutLock && Date.now() - layoutLock.at > LOCK_MAX_MS) { unlockLayout('10분 지남'); broadcast(); }
+  if (peerCfg.auto && !layoutLock) { const r = autoLayout(); if (!r.error) broadcast(); }
+}, 10000);
 
 // ===== 길잡이 로봇 (차 위 ESP32 = STATION_A) =====
 // 차가 벽 스테이션 13개의 비콘(Major 7777)을 듣고 번호별 RSSI를 보냄 → 가장 센 스테이션 자리 = 차 위치
@@ -326,9 +345,16 @@ function carUpdate(b) {
   //  (차가 비콘을 안 쏘면 그 위치는 폰 위치라 쓰지 않음 — 차 = 움직이는 스테이션)
   if (!near && b.beacon === true && current && map.stations[current]) near = { sid: current, r: lastStatusOf(current), via: 'stations' };
   car = { ...(car || {}), id: b.id || 'STATION_A', rssi: b.rssi || {}, heading: b.heading || car?.heading || null,
-          state: b.state || car?.state || null, dest: b.dest ?? car?.dest ?? null, at: Date.now(),
+          state: b.state || car?.state || null, dest: 'dest' in b ? b.dest : (car?.dest ?? null), at: Date.now(),
           near: near ? near.sid : null, node: near ? map.stations[near.sid] : null,
           mode: b.mode || car?.mode || 'map', roomPos: carRoomPos(b.rssi) };
+  // 키패드로 네모방 목적지를 고르면 바로 배치 고정, 주행 뒤 대기로 돌아오면 풀림
+  if (car.mode === 'room' && /^STATION_\d\d$/.test(car.dest || '') && ['SELECT', 'FACING', 'ROUTING', 'DRIVING'].includes(car.state)) lockLayout(car.dest, '키패드');
+  if (layoutLock) {
+    if (car.state === 'DRIVING') layoutLock.drove = true;
+    else if (car.state === 'IDLE' && layoutLock.drove) unlockLayout('차가 도착하거나 멈춤');
+    else if (car.state === 'IDLE' && !car.dest && Date.now() - layoutLock.at > 20000) unlockLayout('목적지 취소');
+  }
   return near;
 }
 // 네모방 화면의 버튼 → 차에 보낼 명령을 맡아 두었다가, 차가 다음 위치 보고(/car) 때 받아 감
@@ -342,6 +368,7 @@ app.post('/car/go', canWrite, (req, res) => {
   if (!room.stations[sid]) return res.status(400).json({ error: `네모방에 ${sid}가 없어요` });
   if (!['N', 'E', 'S', 'W'].includes(b.heading)) return res.status(400).json({ error: '방향은 N, E, S, W 중 하나' });
   carCmd = { go: sid, heading: b.heading, at: Date.now() };
+  lockLayout(sid, '화면 버튼');
   console.log(`[로봇·네모방] 화면에서 ${label(sid)}로 가라는 명령 (차 방향 ${b.heading})`);
   res.json({ ok: true });
 });
@@ -383,6 +410,7 @@ function roomRoute(b, res) {
   if (!target) return res.status(400).json({ error: `네모방에 ${sid}가 없어요` });
   const from = car.roomPos;
   if (!from) return res.status(409).json({ error: '차가 들은 스테이션 신호가 없어요 (스테이션 전원 확인)' });
+  lockLayout(sid, '경로 요청');
   const r = planRoomRoute(from, target, b.heading, 0.3);
   if (r.error) return res.status(400).json(r);
   const warn = from.n < 3 ? `스테이션 ${from.n}개만 들려서 차 위치가 부정확할 수 있어요` : null;
