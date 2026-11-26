@@ -90,6 +90,10 @@
           <button id="autoOnce" type="button">지금 자동 배치</button>
           <label><input type="checkbox" id="autoOn"> 10초마다</label>
         </div>
+        <div class="row" id="lockRow" hidden style="margin-bottom:8px;align-items:center">
+          <span id="lockTxt" style="color:#ffd43b;font-weight:600"></span>
+          <button id="unlock" type="button" class="ghost">고정 풀기</button>
+        </div>
         <div class="row" style="margin-bottom:8px">
           <button id="rot" type="button" class="ghost">90° 회전</button>
           <button id="flip" type="button" class="ghost">좌우 뒤집기</button>
@@ -250,6 +254,11 @@ function draw() {
   IDS.forEach(id => {
     const s = room.stations[id]; if (!s) return;
     const [a, b] = px(s.x, s.y);
+    if (peers.lock && peers.lock.sid === id) {   // 고정된 목적지: 노란 이중 테두리
+      ctx.strokeStyle = '#ffd43b'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(a, b, 26, 0, 7); ctx.stroke();
+      ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(a, b, 32, 0, 7); ctx.stroke();
+    }
     const on = live.parts.some(p => p.id === id);
     ctx.fillStyle = on ? colorOf(id) : '#4a5060';
     ctx.strokeStyle = drag === id ? '#fff' : '#15171d'; ctx.lineWidth = drag === id ? 3 : 2;
@@ -301,6 +310,9 @@ function renderPeers() {
   const ids = new Set(peers.links.flatMap(l => [l.a, l.b]));
   $('peerInfo').textContent = `· 스테이션 ${ids.size}개, 쌍 ${nLinks}개 측정 중`;
   if (document.activeElement !== $('autoOn')) $('autoOn').checked = !!peers.auto;
+  // 목적지를 정하면 서버가 도착할 때까지 배치를 고정함
+  $('lockRow').hidden = !peers.lock;
+  if (peers.lock) $('lockTxt').textContent = `${lab(peers.lock.sid)} 목적지 · 도착할 때까지 배치 고정`;
   for (const sel of [$('refA'), $('refB')]) {
     if (sel.dataset.ids !== IDS.join()) {
       const v = sel.value; sel.dataset.ids = IDS.join();
@@ -367,6 +379,7 @@ async function auto(body) {
   render();
 }
 $('autoOnce').onclick = () => auto({ mode: 'once' });
+$('unlock').onclick = () => auto({ unlock: true }).then(() => { peers.lock = null; render(); });
 $('autoOn').onchange = () => auto({ mode: $('autoOn').checked ? 'on' : 'off' });
 $('refGo').onclick = () => {
   const a = $('refA').value, b = $('refB').value, d = +$('refD').value;
